@@ -1,0 +1,74 @@
+{
+  "providers": {
+    "reproducibility-handbook": [
+      {
+        "canonical_id": "doi:10.0000/example.repro.001",
+        "identifiers": {
+          "doi": "10.0000/example.repro.001"
+        },
+        "title": "A Practical Handbook for Reproducible Computational Research",
+        "authors": [
+          "Example Research Collective"
+        ],
+        "publication_date": "2025-04-10",
+        "source_type": "article",
+        "abstract_or_excerpt": "Computational results are easier to audit and reproduce when researchers preserve versioned inputs, executable methods, dependency identities, random seeds, and machine-readable provenance. Reports should distinguish direct observations from interpretation and link each important claim to inspectable evidence.",
+        "landing_url": "https://example.org/research/reproducibility-handbook",
+        "license": "CC-BY-4.0",
+        "status": "active"
+      },
+      {
+        "canonical_id": "doi:10.0000/example.transparent.002",
+        "identifiers": {
+          "doi": "10.0000/example.transparent.002"
+        },
+        "title": "Transparent Workflows and Research Auditability",
+        "authors": [
+          "Ada Example",
+          "Lin Sample"
+        ],
+        "publication_date": "2024-11-02",
+        "source_type": "article",
+        "abstract_or_excerpt": "An append-only activity record helps reviewers reconstruct how a result was produced. The record is most useful when it includes tool versions, input hashes, parameters, failures, and links from generated artifacts back to the activities and inputs that created them.",
+        "landing_url": "https://example.org/research/transparent-workflows",
+        "license": "CC0-1.0",
+        "status": "active"
+      }
+    ],
+    "methods-index": [
+      {
+        "canonical_id": "doi:10.0000/example.repro.001",
+        "identifiers": {
+          "doi": "https://doi.org/10.0000/EXAMPLE.REPRO.001",
+          "openalex": "WEXAMPLE001"
+        },
+        "title": "A Practical Handbook for Reproducible Computational Research",
+        "authors": [
+          "Example Research Collective"
+        ],
+        "publication_date": "2025",
+        "source_type": "article",
+        "abstract_or_excerpt": "Versioned inputs, environment details, random seeds, and explicit provenance make computational outputs more reproducible. Claims remain reviewable when evidence records retain source identity and exact passages.",
+        "landing_url": "https://index.example.org/works/WEXAMPLE001",
+        "license": "CC-BY-4.0",
+        "status": "active"
+      },
+      {
+        "canonical_id": "doi:10.0000/example.retracted.003",
+        "identifiers": {
+          "doi": "10.0000/example.retracted.003"
+        },
+        "title": "Retracted Example of an Unverifiable Workflow",
+        "authors": [
+          "Invalid Example"
+        ],
+        "publication_date": "2022-01-01",
+        "source_type": "article",
+        "abstract_or_excerpt": "This intentionally retracted fixture asserts that documentation and input preservation are unnecessary. It exists to verify that the agent exposes retraction status and never treats retracted evidence as unqualified sole support.",
+        "landing_url": "https://example.org/research/retracted-workflow",
+        "license": "CC-BY-4.0",
+        "status": "retracted"
+      }
+    ]
+  }
+}

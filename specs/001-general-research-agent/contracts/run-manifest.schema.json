@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/openscience/run-manifest-v1.schema.json",
+  "title": "OpenScience Run Manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "status",
+    "created_at",
+    "updated_at",
+    "request",
+    "plan",
+    "software",
+    "capabilities",
+    "state",
+    "execution",
+    "records",
+    "artifacts",
+    "event_log",
+    "limitations",
+    "errors"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "status": {
+      "enum": ["created", "awaiting_approval", "running", "completed", "partial", "failed", "cancelled"]
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "request": {
+      "type": "object",
+      "required": ["request_id", "question", "limits", "hash"],
+      "properties": {
+        "request_id": { "type": "string" },
+        "question": { "type": "string", "minLength": 10 },
+        "limits": { "type": "object" },
+        "hash": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": true
+    },
+    "plan": {
+      "type": "object",
+      "required": ["plan_id", "steps", "hash"],
+      "properties": {
+        "plan_id": { "type": "string" },
+        "steps": { "type": "array", "items": { "type": "object" } },
+        "hash": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": true
+    },
+    "software": {
+      "type": "object",
+      "required": ["name", "version", "python"],
+      "properties": {
+        "name": { "const": "openscience-agent" },
+        "version": { "type": "string" },
+        "python": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "version", "kind", "risk", "contract_version"],
+        "properties": {
+          "name": { "type": "string" },
+          "version": { "type": "string" },
+          "kind": { "type": "string" },
+          "risk": { "type": "string" },
+          "contract_version": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "required": ["request", "plan", "checkpoint", "execution"],
+      "properties": {
+        "request": { "$ref": "#/$defs/recordIndex" },
+        "plan": { "$ref": "#/$defs/recordIndex" },
+        "checkpoint": { "$ref": "#/$defs/recordIndex" },
+        "execution": { "$ref": "#/$defs/recordIndex" }
+      },
+      "additionalProperties": false
+    },
+    "execution": {
+      "type": "object",
+      "required": ["status", "completed_steps", "step_statuses", "network_requests_used"],
+      "properties": {
+        "status": {
+          "enum": ["created", "awaiting_approval", "running", "completed", "partial", "failed", "cancelled"]
+        },
+        "completed_steps": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "step_statuses": {
+          "type": "object",
+          "additionalProperties": {
+            "enum": ["pending", "running", "completed", "partial", "failed", "cancelled"]
+          }
+        },
+        "network_requests_used": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "records": {
+      "type": "object",
+      "required": ["sources", "evidence", "claims", "policy_decisions"],
+      "properties": {
+        "sources": { "$ref": "#/$defs/recordIndex" },
+        "evidence": { "$ref": "#/$defs/recordIndex" },
+        "claims": { "$ref": "#/$defs/recordIndex" },
+        "policy_decisions": { "$ref": "#/$defs/recordIndex" }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "sha256", "size", "media_type", "produced_by_step"],
+        "properties": {
+          "name": { "type": "string" },
+          "sha256": { "$ref": "#/$defs/sha256" },
+          "size": { "type": "integer", "minimum": 0 },
+          "media_type": { "type": "string" },
+          "produced_by_step": { "type": "string" }
+        }
+      }
+    },
+    "event_log": {
+      "type": "object",
+      "required": ["path", "events", "head_hash"],
+      "properties": {
+        "path": { "type": "string" },
+        "events": { "type": "integer", "minimum": 1 },
+        "head_hash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "report": { "$ref": "#/$defs/recordIndex" },
+    "limitations": { "type": "array", "items": { "type": "string" } },
+    "errors": { "type": "array", "items": { "type": "object" } }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "recordIndex": {
+      "type": "object",
+      "required": ["path", "count", "sha256"],
+      "properties": {
+        "path": { "type": "string" },
+        "count": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "completed" } },
+        "required": ["status"]
+      },
+      "then": { "required": ["report"] }
+    }
+  ],
+  "additionalProperties": true
+}

@@ -1,0 +1,148 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Format, lint, types, and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      UV_PYTHON: "3.11"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          version: "0.12.3"
+
+      - name: Install project and development dependencies
+        run: uv sync --frozen --all-groups
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type-check
+        run: uv run mypy src
+
+      - name: Test with coverage
+        run: uv run pytest --cov=openscience_agent --cov-report=term-missing
+
+  secret-patterns:
+    name: Secret-pattern scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Scan tracked text files
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          fixed_patterns = {
+              "AWS access-key identifier": re.compile(r"AKIA[0-9A-Z]{16}"),
+              "GitHub token": re.compile(r"(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{80,})"),
+              "OpenAI-style key": re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
+              "private-key material": re.compile(
+                  r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"
+              ),
+          }
+          assigned_secret = re.compile(
+              r"(?i)\b(?:api[_-]?key|client[_-]?secret|access[_-]?token|password)\b"
+              r"\s*[:=]\s*[\"']([^\"'\r\n]{16,})[\"']"
+          )
+          placeholder_markers = (
+              "changeme",
+              "abcdefghijklmnopqrstuvwxyz",
+              "dummy",
+              "example",
+              "fake",
+              "not-a-real",
+              "placeholder",
+              "redacted",
+              "test",
+              "your_",
+          )
+
+          tracked = subprocess.check_output(["git", "ls-files", "-z"]).split(b"\0")
+          findings: list[tuple[str, int, str]] = []
+
+          for raw_path in tracked:
+              if not raw_path:
+                  continue
+              path = Path(raw_path.decode())
+              try:
+                  data = (
+                      str(path.readlink()).encode("utf-8")
+                      if path.is_symlink()
+                      else path.read_bytes()
+                  )
+              except OSError:
+                  continue
+              if b"\0" in data:
+                  continue
+              text = data.decode("utf-8", errors="ignore")
+              for line_number, line in enumerate(text.splitlines(), start=1):
+                  lowered = line.lower()
+                  is_placeholder = any(marker in lowered for marker in placeholder_markers)
+                  is_negative_assertion = (
+                      line.lstrip().startswith("assert ") and " not in " in line
+                  )
+                  if not is_placeholder and not is_negative_assertion:
+                      for label, pattern in fixed_patterns.items():
+                          if pattern.search(line):
+                              findings.append((str(path), line_number, label))
+                  match = assigned_secret.search(line)
+                  if (
+                      match
+                      and not is_negative_assertion
+                      and not any(
+                          marker in match.group(1).lower() for marker in placeholder_markers
+                      )
+                  ):
+                      findings.append((str(path), line_number, "hard-coded secret assignment"))
+
+          if findings:
+              print("Potential committed secrets detected (values suppressed):")
+              for path, line_number, label in findings:
+                  print(f"{path}:{line_number}: {label}")
+              raise SystemExit(1)
+
+          print(f"Scanned {len(tracked) - 1} tracked paths; no secret patterns found.")
+          PY
