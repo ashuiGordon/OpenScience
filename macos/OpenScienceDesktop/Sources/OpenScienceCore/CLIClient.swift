@@ -224,18 +224,12 @@ private func spawnCLI(
     let input = Darwin.open("/dev/null", O_RDONLY | O_CLOEXEC)
     guard input >= 0 else { throw CLIProtocolError.unsafeInvocation }
     defer { Darwin.close(input) }
-    let changeDirectoryResult: Int32
-    if #available(macOS 26.0, *) {
-        changeDirectoryResult = posix_spawn_file_actions_addchdir(
-            &actions,
-            invocation.workingDirectory.path
-        )
-    } else {
-        changeDirectoryResult = posix_spawn_file_actions_addchdir_np(
-            &actions,
-            invocation.workingDirectory.path
-        )
-    }
+    // The macOS 14/15 SDK exposes only the Darwin `_np` spelling. Keep the deployment-target
+    // compatible symbol until the minimum SDK itself can move to the standardized API.
+    let changeDirectoryResult = posix_spawn_file_actions_addchdir_np(
+        &actions,
+        invocation.workingDirectory.path
+    )
     guard posix_spawn_file_actions_adddup2(&actions, input, STDIN_FILENO) == 0,
         posix_spawn_file_actions_adddup2(
             &actions,
