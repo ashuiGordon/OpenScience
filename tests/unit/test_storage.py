@@ -28,6 +28,15 @@ def test_event_chain_is_append_only_and_verifiable(tmp_path: Path) -> None:
     assert store.verify_event_chain() == []
 
 
+def test_event_chain_rejects_incomplete_final_jsonl_record(tmp_path: Path) -> None:
+    store = RunStore.create(tmp_path, "run-incomplete-event")
+    store.append_event("run.created", {}, timestamp="2026-01-01T00:00:00Z")
+    events_path = store.path_for("events.jsonl")
+    events_path.write_bytes(events_path.read_bytes().removesuffix(b"\n"))
+
+    assert "not newline-terminated" in " ".join(store.verify_event_chain())
+
+
 def test_event_mutation_is_detected(tmp_path: Path) -> None:
     store = RunStore.create(tmp_path, "run-one")
     store.append_event("run.created", {}, timestamp="2026-08-12T00:00:00Z")

@@ -29,16 +29,33 @@ Key options:
 --source NAME             Enable a registered provider (repeatable)
 --allow-network           Permit network-read providers
 --email ADDRESS           Contact identity for polite scholarly API usage
+OPENSCIENCE_OPENALEX_API_KEY
+                          Optional OpenAlex credential supplied through the process environment
+OPENSCIENCE_CROSSREF_API_KEY
+                          Optional Crossref Plus credential supplied through the process environment
 --max-records N           Bound normalized source count
 --max-network-requests N  Bound provider requests
 --timeout SECONDS         Bound elapsed run time
 --workspace PATH          Parent directory for run records
 --model-config PATH       Optional JSON model adapter configuration
+--model-endpoint URL      Reviewed inline OpenAI-compatible endpoint (mutually exclusive with file)
+--model-name NAME         Reviewed inline model identifier
+--model-timeout SECONDS   Reviewed inline model request timeout in (0, 300]
 --synthesizer NAME        Select a registered synthesis provider by descriptor name
 --plan PATH               Execute a previously reviewed plan
 --yes                     Explicitly approve the displayed/supplied plan non-interactively
 --json                    Machine-readable completion response
 ```
+
+The legacy `--openalex-api-key` and `--crossref-api-key` options remain accepted for compatibility,
+but interactive applications MUST prefer the environment variables above so credentials do not
+appear in the process argument list. Model configuration names its credential environment variable
+with `api_key_env`; the default is `OPENSCIENCE_MODEL_API_KEY`. Credential values MUST NOT be
+persisted in request, plan, run, log, or export records.
+
+Interactive clients SHOULD inspect a non-secret model configuration during plan review and execute
+with the three inline model options. This binds the approved endpoint/model/timeout values to the
+process invocation and avoids reopening a replaceable configuration file after authorization.
 
 In an interactive terminal, omission of `--yes` displays the plan and asks for approval. In a
 non-interactive session, omission of `--yes` stops in `awaiting_approval` before any provider call.

@@ -132,9 +132,18 @@ def _add_provider_options(
     parser.add_argument("--source", action="append", default=[])
     parser.add_argument("--allow-network", action="store_true")
     parser.add_argument("--email")
-    parser.add_argument("--openalex-api-key")
-    parser.add_argument("--crossref-api-key")
+    parser.add_argument(
+        "--openalex-api-key",
+        help="OpenAlex key (prefer OPENSCIENCE_OPENALEX_API_KEY to avoid process arguments)",
+    )
+    parser.add_argument(
+        "--crossref-api-key",
+        help="Crossref key (prefer OPENSCIENCE_CROSSREF_API_KEY to avoid process arguments)",
+    )
     parser.add_argument("--model-config", type=Path)
+    parser.add_argument("--model-endpoint")
+    parser.add_argument("--model-name")
+    parser.add_argument("--model-timeout", type=_positive_float)
     parser.add_argument("--synthesizer", help="Select a registered synthesis provider by name")
     if not include_workspace:
         parser.add_argument("--json", action="store_true", dest="json_output")
@@ -301,7 +310,12 @@ def dispatch(args: argparse.Namespace) -> int:
             approved_local_roots=tuple(args.local_root),
         )
         synthesizer_name = _configure_synthesizer(
-            registry, args.model_config, requested_name=args.synthesizer
+            registry,
+            args.model_config,
+            requested_name=args.synthesizer,
+            endpoint=args.model_endpoint,
+            model=args.model_name,
+            timeout=args.model_timeout,
         )
         orchestrator = _orchestrator(registry, policy)
         plan = _load_plan(args.plan) if args.plan else orchestrator.create_plan(request)
@@ -332,7 +346,12 @@ def dispatch(args: argparse.Namespace) -> int:
             if configured_roots != stored_request.approved_local_roots:
                 raise CLIError("resume local roots must exactly match the recorded approved roots")
         synthesizer_name = _configure_synthesizer(
-            registry, args.model_config, requested_name=args.synthesizer
+            registry,
+            args.model_config,
+            requested_name=args.synthesizer,
+            endpoint=args.model_endpoint,
+            model=args.model_name,
+            timeout=args.model_timeout,
         )
         if checkpoint.get("synthesizer") != synthesizer_name:
             raise CLIError(
@@ -411,14 +430,16 @@ def _build_registry(args: argparse.Namespace) -> tuple[ProviderRegistry, list[st
     email = getattr(args, "email", None)
     registry.register_source(
         OpenAlexSourceProvider(
-            api_key=getattr(args, "openalex_api_key", None),
+            api_key=getattr(args, "openalex_api_key", None)
+            or os.environ.get("OPENSCIENCE_OPENALEX_API_KEY"),
             mailto=email,
             user_agent=f"openscience-agent/{__version__}",
         )
     )
     registry.register_source(
         CrossrefSourceProvider(
-            api_key=getattr(args, "crossref_api_key", None),
+            api_key=getattr(args, "crossref_api_key", None)
+            or os.environ.get("OPENSCIENCE_CROSSREF_API_KEY"),
             mailto=email,
             user_agent=f"openscience-agent/{__version__}",
         )
@@ -432,14 +453,36 @@ def _configure_synthesizer(
     config_path: Path | None,
     *,
     requested_name: str | None = None,
+    endpoint: str | None = None,
+    model: str | None = None,
+    timeout: float | None = None,
 ) -> str:
-    if config_path is None:
+    inline_values = (endpoint, model, timeout)
+    has_inline_value = any(value is not None for value in inline_values)
+    if config_path is not None and has_inline_value:
+        raise CLIError("--model-config cannot be combined with inline model options")
+    if config_path is None and not has_inline_value:
         selected_name = requested_name or "extractive"
         registry.get_synthesizer(selected_name)
         return selected_name
     if requested_name not in {None, "openai-compatible"}:
-        raise CLIError("--model-config can only configure the openai-compatible synthesizer")
-    config = _load_json_object(config_path)
+        raise CLIError("model configuration can only configure the openai-compatible synthesizer")
+    if config_path is not None:
+        config = _load_json_object(config_path)
+    else:
+        missing_inline = [
+            name
+            for name, value in (("--model-endpoint", endpoint), ("--model-name", model))
+            if not value
+        ]
+        if missing_inline:
+            raise CLIError("inline model configuration is missing: " + ", ".join(missing_inline))
+        config = {
+            "endpoint": endpoint,
+            "model": model,
+            "timeout": timeout if timeout is not None else 30.0,
+            "api_key_env": "OPENSCIENCE_MODEL_API_KEY",
+        }
     required = ("endpoint", "model")
     missing = [key for key in required if not config.get(key)]
     if missing:
@@ -616,6 +659,13 @@ def _nonnegative_int(value: str) -> int:
     result = int(value)
     if result < 0:
         raise argparse.ArgumentTypeError("must not be negative")
+    return result
+
+
+def _positive_float(value: str) -> float:
+    result = float(value)
+    if not 0 < result <= 300:
+        raise argparse.ArgumentTypeError("must be in (0, 300]")
     return result
 
 

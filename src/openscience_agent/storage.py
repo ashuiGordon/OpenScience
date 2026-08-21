@@ -175,6 +175,11 @@ class RunStore:
 
     def verify_event_chain(self) -> list[str]:
         issues: list[str] = []
+        events_path = self.path_for("events.jsonl")
+        if events_path.exists():
+            content = events_path.read_bytes()
+            if content and not content.endswith(b"\n"):
+                issues.append("event log is not newline-terminated")
         expected_previous = ZERO_HASH
         for expected_sequence, event in enumerate(self.read_events(), start=1):
             if event.get("run_id") != self.run_directory.name:

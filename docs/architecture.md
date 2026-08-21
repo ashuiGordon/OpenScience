@@ -4,8 +4,12 @@
 
 OpenScience turns a scoped research question into a reviewable plan, normalized sources, exact
 evidence records, classified claims, a cited report, and an auditable run manifest. It is built as
-an original headless kernel so scientific integrity, provenance, policy, and replay remain
-testable independently of any model vendor or user interface.
+an original provider-neutral kernel with a native macOS client. Scientific integrity, provenance,
+policy, and replay remain owned by the kernel and testable independently of any model vendor or
+user interface.
+
+> **Current desktop boundary:** the macOS client is a development/direct-distribution build. It is
+> not App Sandbox enabled, Developer ID signed, notarized, or ready for Mac App Store distribution.
 
 The first-release runtime targets macOS and Linux. Safe local ingestion relies on POSIX
 descriptor-relative, no-follow file opening; a Windows adapter is deferred until it can preserve
@@ -14,8 +18,10 @@ the same race-resistant approved-root invariant.
 The architectural constraints are deliberate:
 
 - Python 3.11+ and no third-party runtime dependencies;
+- a SwiftUI client targeting macOS 14+ without a cloud backend or third-party UI runtime;
+- a typed child-process/JSON bridge instead of duplicating orchestration in Swift;
 - useful offline behavior with deterministic fixtures and extractive synthesis;
-- no required model API, database, or desktop shell;
+- no required model API or database;
 - network access denied unless the user explicitly enables it;
 - untrusted provider, document, and model content never changes policy or the objective;
 - every externally verifiable claim either links to evidence or carries an explicit non-evidence
@@ -26,10 +32,16 @@ The architectural constraints are deliberate:
 
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
-│ CLI / Python API                                                 │
-│ Parse input, display plans, collect approval, select adapters    │
+│ Native macOS client                                             │
+│ SwiftUI views, Keychain references, typed Process/JSON bridge,   │
+│ read-only history/progress projections                           │
 └──────────────────────────────┬───────────────────────────────────┘
-                               │ commands
+                               │ openscience command + terminal JSON
+┌──────────────────────────────▼───────────────────────────────────┐
+│ CLI adapter / Python API                                        │
+│ Parse input, collect approval, select adapters                   │
+└──────────────────────────────┬───────────────────────────────────┘
+                               │ application commands
 ┌──────────────────────────────▼───────────────────────────────────┐
 │ Application and orchestration                                   │
 │ Plan, execute bounded steps, checkpoint, resume, replay, export  │
@@ -50,12 +62,16 @@ The architectural constraints are deliberate:
 
 Dependencies point inward. Domain objects do not import CLI, storage, network, or provider
 implementations. The orchestrator depends on typed ports, and adapters implement those ports.
-Provider replacement therefore changes registration/configuration rather than the kernel.
+Provider replacement therefore changes registration/configuration rather than the kernel. The
+Swift client depends on the public CLI and persisted-record contracts, not Python implementation
+modules.
 
 ## Core responsibilities
 
 | Component | Owns | Must not own |
 |-----------|------|--------------|
+| macOS client | Native presentation, bounded process supervision, Keychain references, per-attempt workspaces, read-only history and progress views | Research orchestration, claim generation, record repair, or secret persistence outside Keychain |
+| Typed CLI bridge | Argument-array construction, minimal child environment, bounded stdout/stderr, terminal JSON decoding, single active mutation | Shell evaluation, implicit network approval, interpreting report text as commands |
 | Domain | Valid entities, transitions, canonical serialization, stable/content IDs | Filesystem, network, process state |
 | Orchestrator | Finite plan execution, dependencies, limits, checkpoints, partial/failure semantics | Vendor payload schemas or secret storage |
 | Policy | Capability risk, target normalization, approval outcomes, path/network boundaries | Executing the requested action |
@@ -65,6 +81,48 @@ Provider replacement therefore changes registration/configuration rather than th
 | Repository/artifact store | Append-only events, atomic projections, addressed bytes | Reinterpreting scientific meaning |
 | Validator | Event chain, hashes, claim/evidence links, manifest and artifact invariants | Repairing failures silently |
 | Renderer/exporter | Citation-preserving report and portable research object | Inventing evidence or credentials |
+
+## Desktop integration flow
+
+```text
+macOS SwiftUI form
+        |
+        v
+CLICommandBuilder -- argument array + non-secret paths/options
+        |                         Keychain
+        |                            |
+        |                    selected secrets only
+        v                            v
+OpenScienceCLIClient actor ---- minimal child environment
+        |
+        | Process, no shell
+        v
+openscience CLI ----> orchestrator/policy/providers
+        |                         |
+        | one terminal JSON       | atomic projections + hash-chained events
+        v                         v
+Swift result model <-------- app-managed run store
+                                  |
+                                  +-- event tail for progress
+                                  +-- read-only history/report/evidence views
+                                  +-- CLI validate/replay/export authority
+```
+
+The app creates a unique empty workspace for each new execution because the CLI reports its
+generated run directory only in the terminal response. It discovers the single `run-*` directory
+inside that workspace and reads complete `events.jsonl` records for progress. The event stream is
+not treated as a command channel, and the one terminal stdout JSON object is not treated as a
+progress stream.
+
+One actor-isolated client owns the mutating `run` or `resume` process. A separate control client may
+write the CLI's idempotent cancellation marker after the exact run directory is known. History and
+report views read recorded files without rewriting them; validation, replay, resume, cancellation,
+and export continue to cross the CLI boundary.
+
+During development, the executable may come from an explicit setting or a standard package-manager
+path. A self-contained app places the pinned helper at `Contents/Helpers/openscience`, which takes
+resolution priority. The Swift layer passes credentials selected from Keychain only in a minimized
+child environment and redacts matching values from bounded diagnostics.
 
 ## Research run flow
 
@@ -117,6 +175,11 @@ configuration are recorded, while credentials and unrelated absolute local paths
 
 | Boundary | Default | Required control |
 |----------|---------|------------------|
+| Desktop form and selected paths | Untrusted, attempt-scoped input | Native pickers, argument arrays, field bounds, exact path display; no shell interpolation |
+| CLI helper selection | Bundled helper first; external path permitted for development | Executable-file check, fixed expected CLI contract, no assumption that a user Python environment is trusted |
+| Keychain to child process | Denied unless the selected provider needs a credential | Provider-specific environment names, minimal inherited environment, no secret in argv/preferences/logs |
+| Child stdout/stderr | Untrusted and size-bounded | Concurrent pipe draining, one terminal JSON decoder, safe error envelope, centralized redaction |
+| Desktop reads of run records | Read-only presentation input | Treat engine artifacts as authority, ignore incomplete event lines, use CLI validation for integrity decisions |
 | CLI/configuration input | Untrusted | Strict parsing, bounded values, normalized paths |
 | Local research files | Denied outside approved roots | Resolved-root containment, symlink-escape rejection, size/format limits, read-only access |
 | Retrieved source text | Untrusted data | Delimiting and normalization; never interpreted as policy/instructions |
@@ -130,10 +193,17 @@ Capability descriptors declare identity, version, kind, risk, schemas, and permi
 invocation. Outcomes are `allow`, `deny`, or `approval_required`; an adapter cannot grant itself
 permission. Policy decisions are first-class run records rather than log messages.
 
-The MVP intentionally has no arbitrary process execution, shell/Python/R runtime, browser control,
-remote write/publication, wet-lab control, or generic MCP bridge. A path allowlist is not a sandbox.
-Future compute requires a separately specified isolated, non-root runtime with explicit mounts,
-resource limits, network policy, immutable environment identities, and secret brokerage.
+The research workflow intentionally has no arbitrary process execution, shell/Python/R tool,
+browser control, remote write/publication, wet-lab control, or generic MCP bridge. The desktop
+client launches only the selected `openscience` helper through `Process` without a shell; this is an
+application integration boundary, not a research execution capability.
+
+The current direct-distribution client is unsandboxed. Native file selection limits what the UI
+passes to one attempt, but it is not an operating-system sandbox or persistent authorization.
+Security-scoped bookmarks, App Sandbox entitlements, hardened-runtime signing, notarization, and
+App Store packaging require a separate distribution specification. Future research compute still
+requires a separately specified isolated, non-root runtime with explicit mounts, resource limits,
+network policy, immutable environment identities, and secret brokerage.
 
 ### Research integrity and data governance
 
@@ -154,8 +224,10 @@ resource limits, network policy, immutable environment identities, and secret br
 
 | Decision | Chosen approach | Deferred/rejected alternative |
 |----------|-----------------|-------------------------------|
-| Product surface | Headless library and CLI | Electron/desktop UI before scientific contracts |
-| Runtime | Python 3.11 standard library | Required framework or model SDK |
+| Product surface | Python library/CLI plus a native macOS SwiftUI client | Cloud service, Electron, or a second UI-owned research workflow |
+| Runtime | Python 3.11 standard-library engine plus Swift 5.10/macOS 14+ client | Required model SDK or third-party desktop runtime |
+| Desktop bridge | Typed argument-array `Process`, terminal JSON, and read-only run projections | Shell commands, Python embedding, or UI reimplementation of the orchestrator |
+| Desktop distribution | Self-contained helper and ad hoc local assembly | Current claims of App Sandbox, Developer ID signing, notarization, or App Store readiness |
 | Workflow | Application-owned finite state machine | Provider-owned prompt workflow |
 | Default synthesis | Deterministic extractive adapter | Required cloud model or unchecked prose |
 | Persistence | Hash-chained JSONL, atomic JSON, content-addressed objects | Mutable-only files, premature distributed event store |
