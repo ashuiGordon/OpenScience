@@ -92,7 +92,7 @@
             let invocation = CLIInvocation(
                 executableURL: URL(fileURLWithPath: "/usr/bin/printf"),
                 arguments: [String(repeating: "x", count: 128)],
-                workingDirectory: URL(fileURLWithPath: "/tmp")
+                workingDirectory: FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             )
             let client = OpenScienceCLIClient(stdoutLimit: 32, stderrLimit: 32)
             do {
