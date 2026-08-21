@@ -1,0 +1,53 @@
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.ipynb_checkpoints/
+
+# Environments and local configuration
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+.python-version
+
+# Build, packaging, and coverage output
+build/
+dist/
+*.egg-info/
+*.whl
+.eggs/
+pip-wheel-metadata/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Runtime output and scratch files
+.demo-runs/
+.openscience-runs/
+*.log
+*.tmp
+*.bak
+
+# Local tool state
+.tox/
+.nox/
+.cache/
