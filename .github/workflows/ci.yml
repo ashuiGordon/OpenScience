@@ -69,11 +69,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@c771a70e627c0a99b617c7a806ffedaca235ff9 # v9.0.0
-        with:
-          enable-cache: true
-          version: "0.12.3"
+      - name: Install pinned uv
+        run: python -m pip install --disable-pip-version-check "uv==0.12.3"
 
       - name: Install Python engine and desktop build dependencies
         run: uv sync --frozen --all-groups
