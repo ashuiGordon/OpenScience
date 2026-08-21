@@ -43,7 +43,7 @@ Validated locally on 2026-08-21 with macOS 26.4.1 on Apple silicon, Swift 6.2.4,
 |---|---|
 | Python deterministic suite | 140 passed; 3 explicit live tests deselected |
 | Swift format and clean release build | Passed; every app and test target compiled |
-| Swift XCTest execution | Skipped because only Command Line Tools is installed; full-Xcode CI must execute a nonzero test set |
+| Swift XCTest execution | GitHub full-Xcode macOS 15 CI: 59 passed, 0 failures |
 | App bundle | 13 MB arm64 bundle; `Info.plist` and deep strict ad hoc signature verified |
 | App executable SHA-256 | `61648b476697e7561b21499b05b3360af43d607ceb4353248cca6efc4561ef25` |
 | Bundled helper SHA-256 | `92dd2a2280b0b69b5a71f1c2c73f6b762bebd1302d9a523e89916800b7663ff7` |
@@ -51,6 +51,7 @@ Validated locally on 2026-08-21 with macOS 26.4.1 on Apple silicon, Swift 6.2.4,
 | Validate and replay | Both passed with `completed` status |
 | Export | 19,633-byte self-validating ZIP; SHA-256 `78521e4258f61ef0d130b1c6b4cdd11ecaa223e43dd353ab8c7592f34694935f` |
 
+Local Command Line Tools cannot execute XCTest, but GitHub full-Xcode CI executed all 59 tests.
 Computer Use and Accessibility Inspector were unavailable in this session. Visual layout, real
 screen-reader behavior, Developer ID signing, notarization, and App Sandbox remain explicit manual
 or later-release gates.

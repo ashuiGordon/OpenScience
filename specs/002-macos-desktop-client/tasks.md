@@ -17,9 +17,9 @@ its direct tests and relevant existing regression tests pass.
 **Organization**: Setup and foundational phases establish typed boundaries. Each subsequent phase
 is an independently testable user-story slice. Exact paths are part of every task contract.
 
-**Current status (2026-08-21)**: 42/97 tasks are complete for the development preview. Pending
-items intentionally include full-Xcode XCTest execution, visual/accessibility inspection, user and
-performance studies, resilience/support-export work, localization/assets, and final release
+**Current status (2026-08-21)**: 59/97 tasks are complete for the development preview. Pending
+items intentionally include visual/accessibility inspection, user and performance studies,
+resilience/support-export work, localization/assets, and final release
 traceability. An unchecked item is not implied complete by a successful local app build.
 
 ## Format: `[ID] [P?] [Story?] Description with file path`
@@ -55,16 +55,16 @@ app-environment boundaries used by every story.
 ### Failing Foundational Contract Tests
 
 - [X] T008 [P] Write failing CLI tests for OpenAlex/Crossref environment credential fallback and secret-free JSON errors in `tests/contract/test_cli.py`
-- [ ] T009 [P] Write failing CLI integration canaries proving run stdout is terminal-only and all three secrets are absent from args/config/events/run/export artifacts in `tests/integration/test_security.py`
-- [ ] T010 [P] Write failing executable-resolution tests for bundled-helper priority, compatible development override, no PATH lookup, and unavailable/incompatible states in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/EngineResolverTests.swift`
-- [ ] T011 [P] Write failing process-runner tests for argument-array launch, bounded async pipes, timeout, exit mapping, minimal environment, and redacted diagnostics in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/FoundationProcessRunnerTests.swift`
-- [ ] T012 [P] Write failing one-object terminal decoder tests for empty, multiple, invalid UTF-8/JSON, oversized, unknown-field, and exit-mismatch cases in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/TerminalJSONDecoderTests.swift`
-- [ ] T013 [P] Write failing unique-workspace tests for empty creation, one `run-*`, zero/multiple candidates, wrong shape, symlink escape, and cleanup policy in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/AttemptWorkspaceTests.swift`
-- [ ] T014 [P] Write failing event-cursor tests for partial lines, coalesced appends, duplicates, gaps, malformed/oversized records, run-ID mismatch, replacement, and wake recovery in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/EventLogCursorTests.swift`
+- [X] T009 [P] Write failing CLI integration canaries proving run stdout is terminal-only and all three secrets are absent from args/config/events/run/export artifacts in `tests/integration/test_security.py`
+- [X] T010 [P] Write failing executable-resolution tests for bundled-helper priority, compatible development override, no PATH lookup, and unavailable/incompatible states in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/EngineResolverTests.swift`
+- [X] T011 [P] Write failing process-runner tests for argument-array launch, bounded async pipes, timeout, exit mapping, minimal environment, and redacted diagnostics in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/FoundationProcessRunnerTests.swift`
+- [X] T012 [P] Write failing one-object terminal decoder tests for empty, multiple, invalid UTF-8/JSON, oversized, unknown-field, and exit-mismatch cases in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/TerminalJSONDecoderTests.swift`
+- [X] T013 [P] Write failing unique-workspace tests for empty creation, one `run-*`, zero/multiple candidates, wrong shape, symlink escape, and cleanup policy in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/AttemptWorkspaceTests.swift`
+- [X] T014 [P] Write failing event-cursor tests for partial lines, coalesced appends, duplicates, gaps, malformed/oversized records, run-ID mismatch, replacement, and wake recovery in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/EventLogCursorTests.swift`
 - [ ] T015 [P] Write failing desktop-domain state-machine/decoding tests for drafts, plan reviews, attempts, run summaries, and export jobs in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/DesktopModelTests.swift`
 - [ ] T016 [P] Write failing Keychain/redactor tests for independent credential items, presence-only metadata, denial, deletion, and canary removal in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/KeychainSecretStoreTests.swift`
 - [ ] T017 [P] Write failing preference/history tests proving secrets/grants/approvals are non-persistable and history cache is rebuildable in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/DesktopPersistenceTests.swift`
-- [ ] T018 [P] Write failing managed-run repository tests for root containment, regular-file checks, size limits, immutable reads, cache invalidation, and validator authority in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/ManagedRunRepositoryTests.swift`
+- [X] T018 [P] Write failing managed-run repository tests for root containment, regular-file checks, size limits, immutable reads, cache invalidation, and validator authority in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/ManagedRunRepositoryTests.swift`
 
 ### Foundational Implementation
 
@@ -97,9 +97,9 @@ local run, and observe exact step progress/counts and validated completion with 
 ### Failing Tests for User Story 1
 
 - [ ] T031 [P] [US1] Write failing composer validation/default/provider-selection tests in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/ResearchComposerViewModelTests.swift`
-- [ ] T032 [P] [US1] Write failing plan command/response/file-identity and review-expiration tests in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/PlanCoordinatorTests.swift`
-- [ ] T033 [P] [US1] Write failing network-grant tests for per-attempt summary, decline, no remembered grant, changed risk/limits, and exact `--allow-network` mapping in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/NetworkGrantTests.swift`
-- [ ] T034 [P] [US1] Write failing run coordinator tests for unique workspace, one `run-*` discovery, terminal-only stdout, event progress, and reconciliation mismatch in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/RunCoordinatorTests.swift`
+- [X] T032 [P] [US1] Write failing plan command/response/file-identity and review-expiration tests in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/PlanCoordinatorTests.swift`
+- [X] T033 [P] [US1] Write failing network-grant tests for per-attempt summary, decline, no remembered grant, changed risk/limits, and exact `--allow-network` mapping in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/NetworkGrantTests.swift`
+- [X] T034 [P] [US1] Write failing run coordinator tests for unique workspace, one `run-*` discovery, terminal-only stdout, event progress, and reconciliation mismatch in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/RunCoordinatorTests.swift`
 - [ ] T035 [P] [US1] Write a failing offline keyboard UI journey from draft through evidence-ready completion in `macos/OpenScienceDesktop/Tests/OpenScienceDesktopTests/NewResearchFlowTests.swift`
 
 ### Implementation for User Story 1
@@ -129,8 +129,8 @@ inspect exact evidence and source attribution without a provider call.
 ### Failing Tests for User Story 2
 
 - [ ] T045 [P] [US2] Write failing 0/100-run rebuild, duplicate-ID, filtering, sorting, invalidation, and no-network history tests in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/RunHistoryViewModelTests.swift`
-- [ ] T046 [P] [US2] Write failing claim/evidence/source join tests for exact IDs, missing links, kinds, stances, source states, attribution, and limits in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/ReportProjectionTests.swift`
-- [ ] T047 [P] [US2] Write failing HTTP(S)-only external URL policy and retrieved-instruction inertness tests in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/ExternalURLPolicyTests.swift`
+- [X] T046 [P] [US2] Write failing claim/evidence/source join tests for exact IDs, missing links, kinds, stances, source states, attribution, and limits in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/ReportProjectionTests.swift`
+- [X] T047 [P] [US2] Write failing HTTP(S)-only external URL policy and retrieved-instruction inertness tests in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/ExternalURLPolicyTests.swift`
 - [ ] T048 [P] [US2] Write failing integrity-invalid read-only and terminal/manifest/event disagreement UI tests in `macos/OpenScienceDesktop/Tests/OpenScienceDesktopTests/IntegrityFailureFlowTests.swift`
 - [ ] T049 [P] [US2] Write a failing history-to-exact-evidence keyboard UI journey in `macos/OpenScienceDesktop/Tests/OpenScienceDesktopTests/HistoryEvidenceFlowTests.swift`
 
@@ -157,8 +157,8 @@ approval/root selection, and compare events to prove that step was not repeated.
 
 ### Failing Tests for User Story 3
 
-- [ ] T056 [P] [US3] Write failing pre-discovery stop, exact post-discovery cancel target, idempotence, grace timeout, and no-fake-terminal tests in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/CancellationCoordinatorTests.swift`
-- [ ] T057 [P] [US3] Write failing resume eligibility/validation, fresh plan/network/root/credential approval, exact provider identity, and completed-step preservation tests in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/ResumeCoordinatorTests.swift`
+- [X] T056 [P] [US3] Write failing pre-discovery stop, exact post-discovery cancel target, idempotence, grace timeout, and no-fake-terminal tests in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/CancellationCoordinatorTests.swift`
+- [X] T057 [P] [US3] Write failing resume eligibility/validation, fresh plan/network/root/credential approval, exact provider identity, and completed-step preservation tests in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/ResumeCoordinatorTests.swift`
 - [ ] T058 [P] [US3] Write a failing cancel-twice/relaunch/resume keyboard UI journey in `macos/OpenScienceDesktop/Tests/OpenScienceDesktopTests/CancelResumeFlowTests.swift`
 
 ### Implementation for User Story 3
@@ -208,9 +208,9 @@ selected fake providers; prove canaries exist only in their child environment en
 
 ### Failing Tests for User Story 5
 
-- [ ] T070 [P] [US5] Write failing provider-discovery decode/refresh/no-network/health tests in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/ProviderListViewModelTests.swift`
+- [X] T070 [P] [US5] Write failing provider-discovery decode/refresh/no-network/health tests in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/ProviderListViewModelTests.swift`
 - [ ] T071 [P] [US5] Write failing settings allowlist/default validation/no-secret/no-grant restoration tests in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/SettingsViewModelTests.swift`
-- [ ] T072 [P] [US5] Write failing selected-only OpenAlex/Crossref/model environment injection and post-spawn clearing canaries in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/CredentialEnvironmentTests.swift`
+- [X] T072 [P] [US5] Write failing selected-only OpenAlex/Crossref/model environment injection and post-spawn clearing canaries in `macos/OpenScienceDesktop/Tests/OpenScienceCoreTests/CredentialEnvironmentTests.swift`
 - [ ] T073 [P] [US5] Write a failing provider/settings/secure-entry/removal keyboard UI journey in `macos/OpenScienceDesktop/Tests/OpenScienceDesktopTests/ProviderSettingsFlowTests.swift`
 
 ### Implementation for User Story 5
@@ -264,7 +264,7 @@ traceability across the selected release scope.
 - [ ] T091 Implement privacy-marked bounded local diagnostics and opt-in redacted support export in `macos/OpenScienceDesktop/Sources/OpenScienceCore/SupportDiagnostics.swift`
 - [X] T092 Make `scripts/build-macos-helper.sh` reproducibly assemble a fixed-version optional `Contents/Helpers/openscience` payload without embedding caches, source secrets, or user paths
 - [X] T093 Make `macos/OpenScienceDesktop/scripts/build-app.sh` produce/validate a launchable unsandboxed `.app`, prioritize an optional `OPENSCIENCE_HELPER_PATH`, and explicitly report Developer ID signing/notarization/sandbox gates as deferred
-- [ ] T094 Run Ruff format/check, strict mypy, deterministic pytest, Swift unit/UI tests, and secret scanning; record exact totals and opt-in live exclusions in `specs/002-macos-desktop-client/quickstart.md`
+- [X] T094 Run Ruff format/check, strict mypy, deterministic pytest, Swift unit/UI tests, and secret scanning; record exact totals and opt-in live exclusions in `specs/002-macos-desktop-client/quickstart.md`
 - [ ] T095 Execute the clean external-engine and optional bundled-helper quickstart journeys and record app/engine versions, architectures, commands, hashes, run IDs/counts, and bundle validation in `specs/002-macos-desktop-client/quickstart.md`
 - [X] T096 [P] Document build, external-engine setup, optional helper assembly, privacy, and deferred distribution claims in `README.md` and `docs/macos-client.md`
 - [ ] T097 Perform final requirements/tasks/constitution traceability and zero-CRITICAL/zero-HIGH consistency audit in `specs/002-macos-desktop-client/checklists/requirements.md`

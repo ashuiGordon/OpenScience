@@ -233,9 +233,9 @@ must not report deferred Developer ID signing/notarization/sandbox gates as pass
 - Host: macOS 26.4.1, Apple silicon arm64; Swift 6.2.4; Python 3.11.15.
 - Python gates: Ruff format/check and strict mypy passed; 140 deterministic tests passed and 3
   explicit live tests were deselected.
-- Swift gates: strict formatting and a clean release/test-target compilation passed. Actual XCTest
-  execution was skipped because this host has Command Line Tools but no full Xcode/xctest; CI is
-  configured to fail when it discovers zero tests.
+- Swift gates: strict formatting and a clean release/test-target compilation passed locally.
+  GitHub full-Xcode macOS 15 CI executed 59 XCTest cases with zero failures, including the real CLI
+  bridge and fixture resume integration tests.
 - App bundle: 13 MB arm64, minimum macOS 14, valid `Info.plist`, locally ad-hoc signed. App executable
   SHA-256: `61648b476697e7561b21499b05b3360af43d607ceb4353248cca6efc4561ef25`.
 - Bundled helper SHA-256:
