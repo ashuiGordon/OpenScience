@@ -685,7 +685,7 @@ public final class ConversationStore: ObservableObject {
         try directory(workspace.deletingLastPathComponent())
         try directory(envelopes)
         try cleanupStagedDeletions(in: envelopes)
-        let discoveredNames = try names(envelopes)
+        var discoveredNames = try names(envelopes)
         var index = WorkspaceFile.empty
         var migrationIssue: ConversationSessionIssue?
         var recoveryIssue: ConversationSessionIssue?
@@ -706,6 +706,7 @@ public final class ConversationStore: ObservableObject {
                     }
                 } else if let legacy = try? decodeLegacy(data) {
                     index = try migrate(legacy, workspace: workspace, envelopes: envelopes)
+                    discoveredNames = try names(envelopes)
                     migrationIssue = ConversationSessionIssue(
                         code: "conversation.migrated_v1",
                         envelopeName: workspace.lastPathComponent,

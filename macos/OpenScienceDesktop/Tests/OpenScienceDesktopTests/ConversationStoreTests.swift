@@ -388,8 +388,9 @@
             XCTAssertTrue(FileManager.default.fileExists(atPath: runDirectory.path))
             XCTAssertNil(store.revision(for: removed.id))
             XCTAssertNil(store.selectedSessionID)
-            XCTAssertFalse(try Self.text(storeURL).contains(removed.id.uuidString.lowercased()))
-            XCTAssertTrue(try Self.text(storeURL).contains(retained.id.uuidString.lowercased()))
+            let workspaceText = try Self.text(storeURL).lowercased()
+            XCTAssertFalse(workspaceText.contains(removed.id.uuidString.lowercased()))
+            XCTAssertTrue(workspaceText.contains(retained.id.uuidString.lowercased()))
             XCTAssertEqual(
                 try ConversationStore(fileURL: storeURL).projects.flatMap(\.sessions).map(\.id),
                 [
