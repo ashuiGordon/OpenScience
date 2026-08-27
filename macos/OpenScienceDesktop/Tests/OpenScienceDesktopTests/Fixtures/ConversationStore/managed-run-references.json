@@ -1,0 +1,13 @@
+{
+  "invalid": [
+    "../run-escape",
+    "/absolute/run",
+    "run-safe/../run-escape",
+    ""
+  ],
+  "schema_version": 1,
+  "valid": [
+    "run-fixture-000",
+    "run-fixture-199"
+  ]
+}

@@ -286,20 +286,21 @@ Fill this table only with fresh evidence from the release candidate:
 - P0 review fixes were applied for cross-conversation state isolation and exact citation routing.
   These fixes remove identified candidate defects; they do not substitute for the unexecuted full
   contract and journey suites.
-- The full `ResearchTurn`/attempt model and mapping contract, deterministic interrupted-write/
-  transaction recovery, SC-002 reference capture/similarity, VoiceOver/manual accessibility,
-  performance, and five-participant moderated usability evidence remain pending.
+- The typed `ResearchTurn`/plan/attempt identity model and stale-result coordinator are implemented;
+  the complete conversation lifecycle journey, deterministic interrupted-write transaction
+  recovery, SC-002 similarity, VoiceOver/manual accessibility, timeline-scroll performance, and
+  five-participant moderated usability evidence remain pending.
 
 | Gate | Required result | Evidence |
 |------|-----------------|----------|
 | Spec Kit prerequisite/analysis | 100% buildable FR/SC coverage, 0 CRITICAL/HIGH | Pending implementation audit |
 | Python deterministic suite | Pass, live excluded | 2026-08-27: PASS — Ruff format/check and strict mypy green; 140 passed, 3 deselected |
 | Swift full suite | Pass | 2026-08-27: PASS — GitHub full-Xcode macOS CI executed 83 tests with 0 failures; release and app assembly passed |
-| Offline conversation journey | Pass | Pending full `ResearchTurn`/attempt contract and journey execution; three-pane candidate only |
+| Offline conversation journey | Pass | PARTIAL — typed ResearchTurn/plan/attempt binding is integrated; complete inline plan/network/run/resume journey test remains pending |
 | Network decline/ephemeral grant | 0 requests on decline; no restored authority | Pending |
 | Session crash/corrupt recovery | 100% fixtures preserve/isolate correctly | PARTIAL — corrupt/missing/newer workspace/envelope, migration, revision conflict, and metadata-delete tests passed in full-Xcode CI; every write-step transaction injection remains pending |
 | Feature-002 cancel/resume/validate/replay/export/providers | Pass | 2026-08-27: real offline plan/run/validate/inspect/replay/export and helper/provider probes passed; cancel/resume UI regression remains pending full-Xcode/manual acceptance |
-| Option 3 geometry/perceptual fidelity | All geometry; similarity ≥0.90 | BLOCKED — exact 1487 × 1058 native offscreen comparison exists, but unmasked SSIM is 0.579766 and the validated PDF preview remains pending |
+| Option 3 geometry/perceptual fidelity | All geometry; similarity ≥0.90 | BLOCKED — exact 1487 × 1058 native offscreen comparison and validated inert PDF preview exist, but unmasked SSIM is 0.559633 |
 | Keyboard/VoiceOver/minimum-size/appearances | Pass | Pending VoiceOver and manual adaptive/appearance acceptance |
 | 200/1,000/1,000 performance | p95 targets met | Pending benchmark and exact 1,000-citation run |
 | Secret/no-copy scan | 0 findings | 2026-08-27: PASS for CI secret-pattern scan and verification canaries; formal clean-room provenance test remains an unchecked feature task |

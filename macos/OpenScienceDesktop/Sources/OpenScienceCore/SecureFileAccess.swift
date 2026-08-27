@@ -1,5 +1,21 @@
+import CryptoKit
 import Darwin
 import Foundation
+
+public enum SecureFileDigest {
+    public static func sha256(
+        of url: URL,
+        within root: URL,
+        maximumBytes: Int
+    ) throws -> String {
+        let data = try SecureFileAccess.readRegularFile(
+            url,
+            within: root,
+            maximumBytes: maximumBytes
+        ).data
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+}
 
 struct SecureFileIdentity: Equatable, Sendable {
     let device: UInt64

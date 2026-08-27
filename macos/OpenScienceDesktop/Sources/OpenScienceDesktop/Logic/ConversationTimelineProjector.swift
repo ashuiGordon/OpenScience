@@ -110,7 +110,7 @@ public enum ConversationTimelineProjector {
         if !outcome.limitations.isEmpty {
             lines.append("限制：\(outcome.limitations.joined(separator: "；"))")
         }
-        let artifacts = artifactReferences(outcome: outcome)
+        let artifacts = artifactReferences(outcome: outcome, detail: detail)
         let message = ConversationMessage(
             role: .assistant,
             kind: kind,
@@ -216,7 +216,36 @@ public enum ConversationTimelineProjector {
         }
     }
 
-    private static func artifactReferences(outcome: RunOutcome) -> [ConversationArtifactReference] {
+    private static func artifactReferences(
+        outcome: RunOutcome,
+        detail: RunDetail?
+    ) -> [ConversationArtifactReference] {
+        if let records = detail?.manifest["artifacts"]?.arrayValue {
+            let manifestArtifacts = records.compactMap { value -> ConversationArtifactReference? in
+                guard let object = value.objectValue,
+                    let id = object["artifact_id"]?.stringValue,
+                    let name = object["name"]?.stringValue
+                else { return nil }
+                let mediaType = object["media_type"]?.stringValue?.lowercased() ?? ""
+                let lowerName = name.lowercased()
+                let kind: ArtifactKind
+                if lowerName == "report.md" || mediaType == "application/pdf" {
+                    kind = .report
+                } else if lowerName == "manifest.json" {
+                    kind = .manifest
+                } else {
+                    kind = .file
+                }
+                return try? ConversationArtifactReference(
+                    id: id,
+                    kind: kind,
+                    title: name,
+                    relativePath: name
+                )
+            }
+            if !manifestArtifacts.isEmpty { return manifestArtifacts }
+        }
+
         let values: [(String, ArtifactKind, String, String?)] = [
             ("report-\(outcome.runID)", .report, "研究报告", outcome.report),
             ("manifest-\(outcome.runID)", .manifest, "运行清单", outcome.manifest),

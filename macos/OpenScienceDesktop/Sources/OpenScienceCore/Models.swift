@@ -401,6 +401,41 @@ public struct RunDetail: Equatable, Sendable {
     public let manifest: JSONValue
 }
 
+/// Safe, path-free metadata for one artifact declared by an authoritative run manifest.
+///
+/// Deliberately omits the artifact's local path. Callers render the returned payload in memory and
+/// must go back through `RunRepository` for every fresh read.
+public struct RunArtifactDescriptor: Equatable, Sendable {
+    public let artifactID: String
+    public let name: String
+    public let mediaType: String
+    public let sha256: String
+    public let size: Int
+
+    public init(
+        artifactID: String,
+        name: String,
+        mediaType: String,
+        sha256: String,
+        size: Int
+    ) {
+        self.artifactID = artifactID
+        self.name = name
+        self.mediaType = mediaType
+        self.sha256 = sha256
+        self.size = size
+    }
+}
+
+/// Only inert, bounded representations cross the repository boundary.
+///
+/// Markdown is strict UTF-8 plain text rather than attributed/HTML content. PDF bytes have already
+/// passed manifest identity, size, checksum, magic-header, and active-action checks.
+public enum RunArtifactPreviewPayload: Equatable, Sendable {
+    case markdown(String)
+    case pdf(Data)
+}
+
 public struct RunProgressSnapshot: Equatable, Sendable {
     public let completedSteps: Int
     public let totalSteps: Int

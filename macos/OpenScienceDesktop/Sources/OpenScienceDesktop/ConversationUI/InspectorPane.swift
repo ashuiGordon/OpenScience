@@ -54,6 +54,30 @@ struct WorkbenchArtifactViewData: Identifiable, Equatable {
     let title: String
     let subtitle: String
     let symbol: String
+    let runID: String?
+    let mediaType: String?
+    let size: Int?
+    let sha256: String?
+
+    init(
+        id: String,
+        title: String,
+        subtitle: String,
+        symbol: String,
+        runID: String? = nil,
+        mediaType: String? = nil,
+        size: Int? = nil,
+        sha256: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.subtitle = subtitle
+        self.symbol = symbol
+        self.runID = runID
+        self.mediaType = mediaType
+        self.size = size
+        self.sha256 = sha256
+    }
 }
 
 struct InspectorPane: View {
@@ -453,20 +477,28 @@ struct InspectorPane: View {
                                 ForEach(model.workbenchArtifacts.prefix(2)) { artifact in
                                     WorkbenchCard {
                                         HStack(spacing: 9) {
-                                            Image(systemName: artifact.symbol)
-                                                .foregroundStyle(WorkbenchTheme.accent)
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(artifact.title)
-                                                    .font(.system(size: 10, weight: .semibold))
-                                                Text(artifact.subtitle)
-                                                    .font(.caption2)
-                                                    .foregroundStyle(WorkbenchTheme.tertiary)
+                                            Button {
+                                                model.selectWorkbenchArtifact(artifact)
+                                            } label: {
+                                                HStack(spacing: 9) {
+                                                    Image(systemName: artifact.symbol)
+                                                        .foregroundStyle(WorkbenchTheme.accent)
+                                                    VStack(alignment: .leading, spacing: 2) {
+                                                        Text(verbatim: artifact.title)
+                                                            .font(.system(size: 10, weight: .semibold))
+                                                        Text(verbatim: artifact.subtitle)
+                                                            .font(.caption2)
+                                                            .foregroundStyle(WorkbenchTheme.tertiary)
+                                                    }
+                                                    Spacer()
+                                                }
                                             }
-                                            Spacer()
+                                            .buttonStyle(.plain)
                                             artifactMenu
                                         }
                                     }
                                 }
+                                artifactPreview(compact: true)
                             }
                         }
                         .padding(13)
@@ -483,18 +515,28 @@ struct InspectorPane: View {
                 ForEach(model.workbenchArtifacts) { artifact in
                     WorkbenchCard {
                         HStack(spacing: 10) {
-                            Image(systemName: artifact.symbol)
-                                .font(.title3)
-                                .foregroundStyle(WorkbenchTheme.accent)
-                                .frame(width: 24)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(artifact.title)
-                                    .font(.system(size: 11, weight: .semibold))
-                                Text(artifact.subtitle)
-                                    .font(.caption2)
-                                    .foregroundStyle(WorkbenchTheme.tertiary)
+                            Button {
+                                model.selectWorkbenchArtifact(artifact)
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: artifact.symbol)
+                                        .font(.title3)
+                                        .foregroundStyle(WorkbenchTheme.accent)
+                                        .frame(width: 24)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(verbatim: artifact.title)
+                                            .font(.system(size: 11, weight: .semibold))
+                                        Text(verbatim: artifact.subtitle)
+                                            .font(.caption2)
+                                            .foregroundStyle(WorkbenchTheme.tertiary)
+                                    }
+                                    Spacer()
+                                }
                             }
-                            Spacer()
+                            .buttonStyle(.plain)
+                            .accessibilityValue(
+                                model.workbenchSelectedArtifactID == artifact.id ? "已选择" : "未选择"
+                            )
                             artifactMenu
                         }
                     }
@@ -509,14 +551,9 @@ struct InspectorPane: View {
                     .frame(maxWidth: .infinity)
                 }
 
-                if !model.workbenchReportMarkdown.isEmpty {
-                    inspectorSectionTitle("报告预览", symbol: "doc.text.magnifyingglass")
-                    WorkbenchCard {
-                        Text(verbatim: model.workbenchReportMarkdown)
-                            .font(.system(size: 10))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                if model.workbenchArtifactPreview != nil {
+                    inspectorSectionTitle("安全预览", symbol: "doc.text.magnifyingglass")
+                    artifactPreview(compact: false)
                 }
             }
             .padding(12)
@@ -533,6 +570,53 @@ struct InspectorPane: View {
             let index = model.workbenchEvidenceRows.firstIndex(where: { $0.id == selectedID })
         else { return model.workbenchEvidenceRows.isEmpty ? 0 : 1 }
         return index + 1
+    }
+
+    @ViewBuilder
+    private func artifactPreview(compact: Bool) -> some View {
+        if let resolution = model.workbenchArtifactPreview {
+            switch resolution {
+            case let .pdf(metadata, data):
+                WorkbenchCard(padding: 8) {
+                    WorkbenchPDFPreview(
+                        artifactID: metadata.artifactID,
+                        data: data,
+                        fillsViewport: compact
+                    )
+                    .frame(height: compact ? 210 : 430)
+                }
+            case let .markdown(metadata, text):
+                WorkbenchCard {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(verbatim: metadata.summary)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(WorkbenchTheme.tertiary)
+                        Text(verbatim: text)
+                            .font(.system(size: 10))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            case let .metadata(metadata, reason):
+                WorkbenchCard {
+                    HStack(alignment: .top, spacing: 9) {
+                        if reason == .unavailable {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "exclamationmark.shield")
+                                .foregroundStyle(WorkbenchTheme.warning)
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(verbatim: reason.safeMessage)
+                                .font(.system(size: 11, weight: .semibold))
+                            Text(verbatim: metadata.summary)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(WorkbenchTheme.secondary)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private func inspectorSectionTitle(_ title: String, symbol: String) -> some View {

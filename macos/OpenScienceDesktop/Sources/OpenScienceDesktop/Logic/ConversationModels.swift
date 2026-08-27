@@ -274,6 +274,390 @@ public struct ConversationDraft: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+private enum WorkbenchIdentityValidation {
+    static func uuid(_ value: String, prefix: String) throws -> UUID {
+        guard value.hasPrefix(prefix) else {
+            throw ConversationStoreError.invalidValue("\(prefix) identity")
+        }
+        let raw = String(value.dropFirst(prefix.count))
+        guard raw == raw.lowercased(), let uuid = UUID(uuidString: raw),
+            uuid.uuidString.lowercased() == raw
+        else {
+            throw ConversationStoreError.invalidValue("\(prefix) identity")
+        }
+        return uuid
+    }
+
+    static func engineID(_ value: String, field: String) throws -> String {
+        guard value == Redactor.redact(value) else {
+            throw ConversationStoreError.invalidValue(field)
+        }
+        let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._:-"))
+        guard !clean.isEmpty, clean == value, clean.utf8.count <= 4 * 1_024,
+            clean.unicodeScalars.allSatisfy(allowed.contains)
+        else { throw ConversationStoreError.invalidValue(field) }
+        return clean
+    }
+
+    static func sha256(_ value: String, field: String) throws -> String {
+        let allowed = CharacterSet(charactersIn: "0123456789abcdef")
+        guard value.count == 64, value.unicodeScalars.allSatisfy(allowed.contains) else {
+            throw ConversationStoreError.invalidValue(field)
+        }
+        return value
+    }
+
+    static func relativeReference(
+        _ value: String,
+        field: String,
+        immediateRunChild: Bool = false
+    ) throws -> String {
+        guard value == Redactor.redact(value), !value.isEmpty, value.utf8.count <= 4 * 1_024,
+            !value.hasPrefix("/"), !value.hasPrefix("~"), !value.contains("\\"),
+            value.rangeOfCharacter(from: .controlCharacters) == nil
+        else { throw ConversationStoreError.invalidValue(field) }
+        let components = value.split(separator: "/", omittingEmptySubsequences: false)
+        guard !components.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
+            throw ConversationStoreError.invalidValue(field)
+        }
+        if immediateRunChild {
+            guard components.count == 1, components[0].hasPrefix("run-") else {
+                throw ConversationStoreError.invalidValue(field)
+            }
+        }
+        return value
+    }
+}
+
+public struct ResearchTurnID: Codable, Equatable, Hashable, Sendable, CustomStringConvertible {
+    public let uuid: UUID
+    public var rawValue: String { "turn-\(uuid.uuidString.lowercased())" }
+    public var description: String { rawValue }
+
+    public init(uuid: UUID = UUID()) { self.uuid = uuid }
+
+    public init(rawValue: String) throws {
+        uuid = try WorkbenchIdentityValidation.uuid(rawValue, prefix: "turn-")
+    }
+
+    public init(from decoder: Decoder) throws {
+        try self.init(rawValue: decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+public struct UserMessageID: Codable, Equatable, Hashable, Sendable, CustomStringConvertible {
+    public let uuid: UUID
+    public var rawValue: String { "message-\(uuid.uuidString.lowercased())" }
+    public var description: String { rawValue }
+
+    public init(uuid: UUID = UUID()) { self.uuid = uuid }
+
+    public init(rawValue: String) throws {
+        uuid = try WorkbenchIdentityValidation.uuid(rawValue, prefix: "message-")
+    }
+
+    public init(from decoder: Decoder) throws {
+        try self.init(rawValue: decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+public struct AttemptBindingID: Codable, Equatable, Hashable, Sendable, CustomStringConvertible {
+    public let uuid: UUID
+    public var rawValue: String { "attempt-\(uuid.uuidString.lowercased())" }
+    public var description: String { rawValue }
+
+    public init(uuid: UUID = UUID()) { self.uuid = uuid }
+
+    public init(rawValue: String) throws {
+        uuid = try WorkbenchIdentityValidation.uuid(rawValue, prefix: "attempt-")
+    }
+
+    public init(from decoder: Decoder) throws {
+        try self.init(rawValue: decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+public struct UserMessage: Codable, Equatable, Hashable, Sendable {
+    public let id: UserMessageID
+    public let text: String
+    public let createdAt: Date
+    public let attachmentHints: [ConversationReselectionHint]
+    public var messageID: UserMessageID { id }
+    public var uuid: UUID { id.uuid }
+
+    public init(
+        id: UserMessageID = UserMessageID(),
+        text: String,
+        createdAt: Date = Date(),
+        attachmentHints: [ConversationReselectionHint] = []
+    ) throws {
+        let clean = Redactor.redact(text).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, clean.count <= 10_000 else {
+            throw ConversationStoreError.invalidValue("user message")
+        }
+        self.id = id
+        self.text = clean
+        self.createdAt = createdAt
+        self.attachmentHints = attachmentHints
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id = "message_id", text, createdAt = "created_at"
+        case attachmentHints = "attachment_hints"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            id: values.decode(UserMessageID.self, forKey: .id),
+            text: values.decode(String.self, forKey: .text),
+            createdAt: values.decode(Date.self, forKey: .createdAt),
+            attachmentHints: values.decodeIfPresent(
+                [ConversationReselectionHint].self, forKey: .attachmentHints) ?? [])
+    }
+}
+
+public enum TurnStateHint: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
+    case draft
+    case planning
+    case awaitingPlanApproval = "awaiting_plan_approval"
+    case awaitingNetwork = "awaiting_network"
+    case running
+    case stopping
+    case completed
+    case partial
+    case failedSafe = "failed_safe"
+    case rejectedOrDraft = "rejected_or_draft"
+    case cancelled
+    case interrupted
+    case invalid
+    case unknown
+
+    public init(sessionStatus: SessionStatus) {
+        switch sessionStatus {
+        case .draft: self = .draft
+        case .planning: self = .planning
+        case .awaitingApproval: self = .awaitingPlanApproval
+        case .running: self = .running
+        case .completed: self = .completed
+        case .partial: self = .partial
+        case .failed: self = .failedSafe
+        case .cancelled: self = .cancelled
+        case .interrupted: self = .interrupted
+        case .invalid: self = .invalid
+        case .unknown: self = .unknown
+        }
+    }
+
+    public var downgradedForRelaunch: Self {
+        switch self {
+        case .planning, .awaitingPlanApproval, .awaitingNetwork, .running, .stopping:
+            return .unknown
+        default: return self
+        }
+    }
+}
+
+public struct PlanReference: Codable, Equatable, Hashable, Sendable {
+    public let requestID: String
+    public let planID: String
+    public let planSHA256: String
+    public let attemptPrivatePathHint: String?
+
+    public init(
+        requestID: String,
+        planID: String,
+        planSHA256: String,
+        attemptPrivatePathHint: String? = nil
+    ) throws {
+        self.requestID = try WorkbenchIdentityValidation.engineID(requestID, field: "request id")
+        self.planID = try WorkbenchIdentityValidation.engineID(planID, field: "plan id")
+        self.planSHA256 = try WorkbenchIdentityValidation.sha256(
+            planSHA256, field: "plan sha256")
+        self.attemptPrivatePathHint = try attemptPrivatePathHint.map {
+            try WorkbenchIdentityValidation.relativeReference($0, field: "plan path hint")
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case requestID = "request_id", planID = "plan_id", planSHA256 = "plan_sha256"
+        case attemptPrivatePathHint = "attempt_private_path_hint"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            requestID: values.decode(String.self, forKey: .requestID),
+            planID: values.decode(String.self, forKey: .planID),
+            planSHA256: values.decode(String.self, forKey: .planSHA256),
+            attemptPrivatePathHint: values.decodeIfPresent(String.self, forKey: .attemptPrivatePathHint))
+    }
+}
+
+public struct RunBinding: Codable, Identifiable, Equatable, Hashable, Sendable {
+    public let id: AttemptBindingID
+    public let turnID: ResearchTurnID
+    public let attemptOrdinal: Int
+    public let runID: String?
+    public let managedRelativeReference: String?
+    public let requestID: String
+    public let planID: String
+    public let planSHA256: String
+    public let lastValidatedFingerprint: String?
+    public let statusHint: SessionStatus
+    public let createdAt: Date
+    public var bindingID: AttemptBindingID { id }
+
+    public init(
+        bindingID: AttemptBindingID = AttemptBindingID(),
+        turnID: ResearchTurnID,
+        attemptOrdinal: Int,
+        runID: String? = nil,
+        managedRelativeReference: String? = nil,
+        requestID: String,
+        planID: String,
+        planSHA256: String,
+        lastValidatedFingerprint: String? = nil,
+        statusHint: SessionStatus = .unknown,
+        createdAt: Date = Date()
+    ) throws {
+        guard attemptOrdinal > 0 else {
+            throw ConversationStoreError.invalidValue("attempt ordinal")
+        }
+        let cleanRunID = try runID.map {
+            try WorkbenchIdentityValidation.engineID($0, field: "run id")
+        }
+        let cleanReference = try managedRelativeReference.map {
+            try WorkbenchIdentityValidation.relativeReference(
+                $0, field: "managed relative reference", immediateRunChild: true)
+        }
+        guard (cleanRunID == nil) == (cleanReference == nil),
+            cleanRunID == nil || cleanRunID == cleanReference
+        else { throw ConversationStoreError.invalidValue("run reference identity") }
+        self.id = bindingID
+        self.turnID = turnID
+        self.attemptOrdinal = attemptOrdinal
+        self.runID = cleanRunID
+        self.managedRelativeReference = cleanReference
+        self.requestID = try WorkbenchIdentityValidation.engineID(requestID, field: "request id")
+        self.planID = try WorkbenchIdentityValidation.engineID(planID, field: "plan id")
+        self.planSHA256 = try WorkbenchIdentityValidation.sha256(
+            planSHA256, field: "plan sha256")
+        self.lastValidatedFingerprint = try lastValidatedFingerprint.map {
+            try WorkbenchIdentityValidation.sha256($0, field: "validated fingerprint")
+        }
+        self.statusHint = statusHint
+        self.createdAt = createdAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id = "binding_id", turnID = "turn_id", attemptOrdinal = "attempt_ordinal"
+        case runID = "run_id", managedRelativeReference = "managed_relative_reference"
+        case requestID = "request_id", planID = "plan_id", planSHA256 = "plan_sha256"
+        case lastValidatedFingerprint = "last_validated_fingerprint"
+        case statusHint = "status_hint", createdAt = "created_at"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            bindingID: values.decode(AttemptBindingID.self, forKey: .id),
+            turnID: values.decode(ResearchTurnID.self, forKey: .turnID),
+            attemptOrdinal: values.decode(Int.self, forKey: .attemptOrdinal),
+            runID: values.decodeIfPresent(String.self, forKey: .runID),
+            managedRelativeReference: values.decodeIfPresent(
+                String.self, forKey: .managedRelativeReference),
+            requestID: values.decode(String.self, forKey: .requestID),
+            planID: values.decode(String.self, forKey: .planID),
+            planSHA256: values.decode(String.self, forKey: .planSHA256),
+            lastValidatedFingerprint: values.decodeIfPresent(
+                String.self, forKey: .lastValidatedFingerprint),
+            statusHint: values.decodeIfPresent(SessionStatus.self, forKey: .statusHint) ?? .unknown,
+            createdAt: values.decode(Date.self, forKey: .createdAt))
+    }
+
+    public var downgradedForRelaunch: Self {
+        get throws {
+            try Self.init(
+                bindingID: id,
+                turnID: turnID,
+                attemptOrdinal: attemptOrdinal,
+                runID: runID,
+                managedRelativeReference: managedRelativeReference,
+                requestID: requestID,
+                planID: planID,
+                planSHA256: planSHA256,
+                lastValidatedFingerprint: lastValidatedFingerprint,
+                statusHint: [.planning, .awaitingApproval, .running].contains(statusHint)
+                    ? .unknown : statusHint,
+                createdAt: createdAt)
+        }
+    }
+}
+
+public struct ResearchTurn: Codable, Identifiable, Equatable, Hashable, Sendable {
+    public let id: ResearchTurnID
+    public let message: UserMessage
+    public let createdAt: Date
+    public var planReference: PlanReference?
+    public var attemptBindingIDs: [AttemptBindingID]
+    public var stateHint: TurnStateHint
+    public var turnID: ResearchTurnID { id }
+
+    public init(
+        id: ResearchTurnID = ResearchTurnID(),
+        message: UserMessage,
+        createdAt: Date? = nil,
+        planReference: PlanReference? = nil,
+        attemptBindingIDs: [AttemptBindingID] = [],
+        stateHint: TurnStateHint = .draft
+    ) throws {
+        guard Set(attemptBindingIDs).count == attemptBindingIDs.count else {
+            throw ConversationStoreError.invalidValue("duplicate attempt binding id")
+        }
+        self.id = id
+        self.message = message
+        self.createdAt = createdAt ?? message.createdAt
+        self.planReference = planReference
+        self.attemptBindingIDs = attemptBindingIDs
+        self.stateHint = stateHint
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id = "turn_id", message, createdAt = "created_at"
+        case planReference = "plan_reference", attemptBindingIDs = "attempt_binding_ids"
+        case stateHint = "state_hint"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            id: values.decode(ResearchTurnID.self, forKey: .id),
+            message: values.decode(UserMessage.self, forKey: .message),
+            createdAt: values.decode(Date.self, forKey: .createdAt),
+            planReference: values.decodeIfPresent(PlanReference.self, forKey: .planReference),
+            attemptBindingIDs: values.decodeIfPresent(
+                [AttemptBindingID].self, forKey: .attemptBindingIDs) ?? [],
+            stateHint: values.decodeIfPresent(TurnStateHint.self, forKey: .stateHint) ?? .draft)
+    }
+}
+
 public struct ConversationSession: Codable, Identifiable, Equatable, Hashable, Sendable {
     public let id: UUID
     public let projectID: UUID
@@ -287,6 +671,8 @@ public struct ConversationSession: Codable, Identifiable, Equatable, Hashable, S
     public var draft: ConversationDraft?
     public var runReferences: [ConversationRunReference]
     public var artifactReferences: [ConversationArtifactReference]
+    public var turns: [ResearchTurn]
+    public var bindings: [RunBinding]
 
     public init(
         id: UUID = UUID(),
@@ -300,7 +686,9 @@ public struct ConversationSession: Codable, Identifiable, Equatable, Hashable, S
         linkedRunIDs: [String] = [],
         draft: ConversationDraft? = nil,
         runReferences: [ConversationRunReference] = [],
-        artifactReferences: [ConversationArtifactReference] = []
+        artifactReferences: [ConversationArtifactReference] = [],
+        turns: [ResearchTurn] = [],
+        bindings: [RunBinding] = []
     ) {
         self.id = id
         self.projectID = projectID
@@ -314,6 +702,8 @@ public struct ConversationSession: Codable, Identifiable, Equatable, Hashable, S
         self.draft = draft
         self.runReferences = runReferences
         self.artifactReferences = artifactReferences
+        self.turns = turns
+        self.bindings = bindings
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -329,6 +719,7 @@ public struct ConversationSession: Codable, Identifiable, Equatable, Hashable, S
         case draft
         case runReferences = "run_references"
         case artifactReferences = "artifact_references"
+        case turns, bindings
     }
 
     public init(from decoder: Decoder) throws {
@@ -347,7 +738,9 @@ public struct ConversationSession: Codable, Identifiable, Equatable, Hashable, S
             runReferences: try container.decodeIfPresent(
                 [ConversationRunReference].self, forKey: .runReferences) ?? [],
             artifactReferences: try container.decodeIfPresent(
-                [ConversationArtifactReference].self, forKey: .artifactReferences) ?? []
+                [ConversationArtifactReference].self, forKey: .artifactReferences) ?? [],
+            turns: try container.decodeIfPresent([ResearchTurn].self, forKey: .turns) ?? [],
+            bindings: try container.decodeIfPresent([RunBinding].self, forKey: .bindings) ?? []
         )
     }
 }

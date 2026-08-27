@@ -27,6 +27,11 @@ cp "$BIN_DIR/OpenScienceDesktop" "$APP_PATH/Contents/MacOS/OpenScienceDesktop"
 cp "$PROJECT_DIR/App/Info.plist" "$APP_PATH/Contents/Info.plist"
 chmod 755 "$APP_PATH/Contents/MacOS/OpenScienceDesktop"
 
+RESOURCE_SOURCE="$PROJECT_DIR/Sources/OpenScienceDesktop/Resources"
+if [ -d "$RESOURCE_SOURCE" ]; then
+    cp -R "$RESOURCE_SOURCE/." "$APP_PATH/Contents/Resources/"
+fi
+
 if [ -n "${OPENSCIENCE_HELPER_PATH:-}" ]; then
     if [ ! -f "$OPENSCIENCE_HELPER_PATH" ] || [ ! -x "$OPENSCIENCE_HELPER_PATH" ]; then
         echo "OPENSCIENCE_HELPER_PATH must point to an executable standalone helper" >&2

@@ -352,6 +352,198 @@
         }
 
         @MainActor
+        func testAppendTurnIsIdempotentByMessageIDEvenAfterFirstRevisionCommits() throws {
+            let store = try ConversationStore(fileURL: storeURL)
+            let session = try store.createSession(title: "Turns", prompt: nil, now: Self.date(1))
+            let initialRevision = try XCTUnwrap(store.revision(for: session.id))
+            let message = try UserMessage(
+                id: UserMessageID(
+                    uuid: UUID(uuidString: "00000000-0000-0000-0000-000000000111")!),
+                text: "Compare exact findings",
+                createdAt: Self.date(2))
+
+            let first = try store.appendTurn(
+                sessionID: session.id,
+                message: message,
+                expectedRevision: initialRevision)
+            let committedRevision = try XCTUnwrap(store.revision(for: session.id))
+            let duplicate = try store.appendTurn(
+                sessionID: session.id,
+                message: message,
+                expectedRevision: initialRevision)
+
+            XCTAssertEqual(first, duplicate)
+            XCTAssertEqual(store.revision(for: session.id), committedRevision)
+            XCTAssertEqual(store.selectedSession?.turns, [first])
+            XCTAssertEqual(store.selectedSession?.messages.map(\.text), [message.text])
+
+            XCTAssertThrowsError(
+                try store.appendTurn(
+                    sessionID: session.id,
+                    message: UserMessage(
+                        id: message.id, text: "Conflicting duplicate", createdAt: message.createdAt),
+                    expectedRevision: committedRevision))
+            XCTAssertEqual(store.selectedSession?.turns, [first])
+        }
+
+        @MainActor
+        func testBindPlanAndAttemptRequireCurrentRevisionAndPersistOnlyTypedReferences() throws {
+            let store = try ConversationStore(fileURL: storeURL)
+            let session = try store.createSession(title: "Binding", prompt: nil, now: Self.date(1))
+            let message = try UserMessage(text: "Question", createdAt: Self.date(2))
+            let turn = try store.appendTurn(
+                sessionID: session.id,
+                message: message,
+                expectedRevision: try XCTUnwrap(store.revision(for: session.id)))
+            let afterTurn = try XCTUnwrap(store.revision(for: session.id))
+            let plan = try PlanReference(
+                requestID: "request-exact", planID: "plan-exact",
+                planSHA256: String(repeating: "c", count: 64),
+                attemptPrivatePathHint: "reviewed-plan.json")
+            let planned = try store.bindPlan(
+                sessionID: session.id,
+                turnID: turn.id,
+                planReference: plan,
+                expectedRevision: afterTurn)
+            XCTAssertEqual(planned.planReference, plan)
+            let afterPlan = try XCTUnwrap(store.revision(for: session.id))
+
+            XCTAssertThrowsError(
+                try store.bindPlan(
+                    sessionID: session.id,
+                    turnID: turn.id,
+                    planReference: plan,
+                    expectedRevision: afterTurn)
+            ) { error in
+                XCTAssertEqual(
+                    error as? ConversationStoreError,
+                    .revisionConflict(expected: afterTurn, actual: afterPlan))
+            }
+
+            let binding = try RunBinding(
+                bindingID: AttemptBindingID(), turnID: turn.id, attemptOrdinal: 1,
+                runID: "run-exact", managedRelativeReference: "run-exact",
+                requestID: plan.requestID, planID: plan.planID,
+                planSHA256: plan.planSHA256, statusHint: .completed,
+                createdAt: Self.date(3))
+            XCTAssertThrowsError(
+                try store.bindAttempt(
+                    sessionID: session.id,
+                    turnID: turn.id,
+                    binding: binding,
+                    expectedRevision: afterTurn)
+            ) { error in
+                XCTAssertEqual(
+                    error as? ConversationStoreError,
+                    .revisionConflict(expected: afterTurn, actual: afterPlan))
+            }
+            _ = try store.bindAttempt(
+                sessionID: session.id,
+                turnID: turn.id,
+                binding: binding,
+                expectedRevision: afterPlan)
+
+            let envelope = try Self.text(Self.envelopeURL(store, session.id))
+            XCTAssertTrue(envelope.contains(#""turns""#))
+            XCTAssertTrue(envelope.contains(#""bindings""#))
+            XCTAssertTrue(envelope.contains("request-exact"))
+            XCTAssertTrue(envelope.contains("plan-exact"))
+            XCTAssertTrue(envelope.contains("run-exact"))
+            for forbidden in [
+                "approved", "grant", "allow_network", "/private/", "evidence_passage",
+                "report_text",
+            ] {
+                XCTAssertFalse(envelope.localizedCaseInsensitiveContains(forbidden))
+            }
+
+            let reloaded = try ConversationStore(fileURL: storeURL)
+            XCTAssertEqual(reloaded.selectedSession?.turns.first?.planReference, plan)
+            XCTAssertEqual(reloaded.selectedSession?.turns.first?.attemptBindingIDs, [binding.id])
+            XCTAssertEqual(reloaded.selectedSession?.bindings, [binding])
+        }
+
+        @MainActor
+        func testAttemptBindingAcquiresOneExactManagedRunWithoutChangingAttemptIdentity() throws {
+            let store = try ConversationStore(fileURL: storeURL)
+            let session = try store.createSession(title: "Discovery", prompt: nil)
+            let turn = try store.appendTurn(
+                sessionID: session.id,
+                message: UserMessage(text: "Question"),
+                expectedRevision: try XCTUnwrap(store.revision(for: session.id)))
+            let plan = try PlanReference(
+                requestID: "request-discovery", planID: "plan-discovery",
+                planSHA256: String(repeating: "7", count: 64))
+            _ = try store.bindPlan(
+                sessionID: session.id, turnID: turn.id, planReference: plan,
+                expectedRevision: try XCTUnwrap(store.revision(for: session.id)))
+            let bindingID = AttemptBindingID()
+            let createdAt = Self.date(4)
+            let pending = try RunBinding(
+                bindingID: bindingID, turnID: turn.id, attemptOrdinal: 1,
+                requestID: plan.requestID, planID: plan.planID,
+                planSHA256: plan.planSHA256, createdAt: createdAt)
+            _ = try store.bindAttempt(
+                sessionID: session.id, turnID: turn.id, binding: pending,
+                expectedRevision: try XCTUnwrap(store.revision(for: session.id)))
+            let discovered = try RunBinding(
+                bindingID: bindingID, turnID: turn.id, attemptOrdinal: 1,
+                runID: "run-discovered", managedRelativeReference: "run-discovered",
+                requestID: plan.requestID, planID: plan.planID,
+                planSHA256: plan.planSHA256, statusHint: .running,
+                createdAt: createdAt)
+            _ = try store.bindAttempt(
+                sessionID: session.id, turnID: turn.id, binding: discovered,
+                expectedRevision: try XCTUnwrap(store.revision(for: session.id)))
+            XCTAssertEqual(store.selectedSession?.bindings, [discovered])
+            XCTAssertEqual(store.selectedSession?.turns.first?.attemptBindingIDs, [bindingID])
+
+            let revision = try XCTUnwrap(store.revision(for: session.id))
+            let envelope = Self.envelopeURL(store, session.id)
+            let before = try Data(contentsOf: envelope)
+            let replacement = try RunBinding(
+                bindingID: bindingID, turnID: turn.id, attemptOrdinal: 1,
+                runID: "run-replaced", managedRelativeReference: "run-replaced",
+                requestID: plan.requestID, planID: plan.planID,
+                planSHA256: plan.planSHA256, statusHint: .completed,
+                createdAt: createdAt)
+            XCTAssertThrowsError(
+                try store.bindAttempt(
+                    sessionID: session.id, turnID: turn.id, binding: replacement,
+                    expectedRevision: revision))
+            XCTAssertEqual(try Data(contentsOf: envelope), before)
+            XCTAssertEqual(store.revision(for: session.id), revision)
+        }
+
+        @MainActor
+        func testLegacyV1EnvelopeWithoutTurnsRebuildsTypedTurnIdentity() throws {
+            let store = try ConversationStore(fileURL: storeURL)
+            let session = try store.createSession(
+                title: "Legacy envelope", prompt: "legacy envelope question", now: Self.date(2))
+            let url = Self.envelopeURL(store, session.id)
+            var envelope = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+            let turns = try XCTUnwrap(envelope.removeValue(forKey: "turns") as? [[String: Any]])
+            envelope.removeValue(forKey: "bindings")
+            envelope["user_messages"] = turns.map { turn in
+                let message = turn["message"] as! [String: Any]
+                let rawID = (message["message_id"] as! String)
+                    .replacingOccurrences(of: "message-", with: "")
+                return [
+                    "message_id": rawID,
+                    "text": message["text"] as! String,
+                    "created_at": message["created_at"] as! String,
+                ]
+            }
+            try JSONSerialization.data(withJSONObject: envelope).write(to: url)
+
+            let reloaded = try ConversationStore(fileURL: storeURL)
+            let loaded = try XCTUnwrap(reloaded.selectedSession)
+            XCTAssertEqual(loaded.messages.map(\.text), ["legacy envelope question"])
+            XCTAssertEqual(loaded.turns.count, 1)
+            XCTAssertEqual(loaded.turns.first?.message.uuid, loaded.messages.first?.id)
+        }
+
+        @MainActor
         func testDeleteSessionMetadataRemovesOnlyExactEnvelopeAndLeavesRunsExportsUnchanged() throws {
             let store = try ConversationStore(fileURL: storeURL)
             let project = try store.createProject(title: "Delete")

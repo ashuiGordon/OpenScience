@@ -27,7 +27,7 @@
 
 - [P2] Reference-size perceptual threshold is not met.
   Location: whole workbench.
-  Evidence: the final equal-size unmasked FFmpeg SSIM is `0.579766`; the feature specification
+  Evidence: the final equal-size unmasked FFmpeg SSIM is `0.559633`; the feature specification
   requires masked perceptual similarity of at least `0.90`, with masking restricted to timestamp
   glyphs and a one-pixel text fringe. The implementation matches the three-region structure and
   accepted widths, but surface fills, typography rasterization, content density, and card geometry
@@ -36,17 +36,6 @@
   pixel-faithful acceptance of the sole target.
   Fix: add the declared masked comparison harness, then continue token/spacing/type tuning against
   that measured output on a full-size capture host.
-
-- [P2] The selected Evidence state does not reproduce the reference's inline PDF page.
-  Location: right preview, related artifacts.
-  Evidence: the source shows a rendered PDF page under the artifact row. The implementation shows
-  exact evidence, collapsed evidence details, run provenance, and validated artifact rows; the
-  Artifacts tab provides inert native Markdown, but no bounded native PDF page is available from the
-  current run fixture.
-  Impact: the preview column is structurally complete, but the most visually distinctive artifact
-  preview in the target is absent.
-  Fix: add a real manifest-declared PDF fixture and bounded PDFKit renderer after repository
-  identity, containment, regular-file, and size validation.
 
 ## Required fidelity surfaces
 
@@ -60,7 +49,8 @@
   network warning, and restrained separators match the direction. Source-specific charcoal values
   are not yet pixel-matched.
 - Image quality and asset fidelity: no external logo or copied product asset is used. SF Symbols
-  remain sharp at Retina density. The missing real PDF preview remains actionable P2.
+  remain sharp at Retina density. A real deterministic PDF fixture is resolved through bounded
+  manifest validation and rendered as a non-interactive first-page thumbnail.
 - Copy and content: product copy is coherent and independently identifies OpenScience. Fixture
   scientific text is explicitly deterministic preview data; retrieved content uses inert native
   text.
@@ -104,8 +94,8 @@
 4. Final equal-size pass
    - Evidence: `implementation-final-normalized.png`,
      `comparison-final-1487x1058.png`, and `comparison-final-content.png`.
-   - Result: no P0/P1 layout or core interaction mismatch remains. The two P2 findings above remain
-     actionable; exact SSIM is `0.579766`.
+   - Result: no P0/P1 layout or core interaction mismatch remains. The PDF-preview P2 was resolved;
+     the perceptual-threshold P2 remains actionable and exact SSIM is `0.559633`.
 
 ## Implementation checklist
 
@@ -116,7 +106,7 @@
 - [x] Exact citation ID routing and inert retrieved content
 - [x] Dark reference fixture and equal-size comparison artifacts
 - [ ] Masked similarity ≥0.90
-- [ ] Validated native PDF artifact preview
+- [x] Validated, inert native PDF artifact preview
 
 ## Follow-up polish
 

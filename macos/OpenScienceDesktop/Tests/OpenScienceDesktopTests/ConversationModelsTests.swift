@@ -105,5 +105,102 @@
                 ])
             )
         }
+
+        func testTypedWorkbenchIdentitiesRoundTripAndRejectMalformedValues() throws {
+            let uuid = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+            let turnID = ResearchTurnID(uuid: uuid)
+            let messageID = UserMessageID(uuid: uuid)
+            let attemptID = AttemptBindingID(uuid: uuid)
+            let encoder = JSONEncoder()
+            let turnData = try encoder.encode(turnID)
+            let messageData = try encoder.encode(messageID)
+            let attemptData = try encoder.encode(attemptID)
+            XCTAssertEqual(
+                String(data: turnData, encoding: .utf8),
+                #""turn-00000000-0000-0000-0000-000000000001""#)
+            XCTAssertEqual(
+                String(data: messageData, encoding: .utf8),
+                #""message-00000000-0000-0000-0000-000000000001""#)
+            XCTAssertEqual(
+                String(data: attemptData, encoding: .utf8),
+                #""attempt-00000000-0000-0000-0000-000000000001""#)
+            let decoder = JSONDecoder()
+            XCTAssertEqual(try decoder.decode(ResearchTurnID.self, from: turnData), turnID)
+            XCTAssertEqual(try decoder.decode(UserMessageID.self, from: messageData), messageID)
+            XCTAssertEqual(try decoder.decode(AttemptBindingID.self, from: attemptData), attemptID)
+
+            XCTAssertThrowsError(
+                try ResearchTurnID(
+                    rawValue: "turn-AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
+            XCTAssertThrowsError(try UserMessageID(rawValue: "message-not-a-uuid"))
+            XCTAssertThrowsError(
+                try AttemptBindingID(rawValue: "run-" + uuid.uuidString.lowercased()))
+        }
+
+        func testPlanAndRunBindingRequireExactSafeIdentity() throws {
+            let sha = String(repeating: "a", count: 64)
+            let turnID = ResearchTurnID()
+            let plan = try PlanReference(
+                requestID: "request:exact-1",
+                planID: "plan-exact-1",
+                planSHA256: sha,
+                attemptPrivatePathHint: "plan-exact-1.json")
+            XCTAssertEqual(plan.planSHA256, sha)
+
+            let binding = try RunBinding(
+                bindingID: AttemptBindingID(),
+                turnID: turnID,
+                attemptOrdinal: 1,
+                runID: "run-exact-1",
+                managedRelativeReference: "run-exact-1",
+                requestID: plan.requestID,
+                planID: plan.planID,
+                planSHA256: plan.planSHA256,
+                lastValidatedFingerprint: String(repeating: "b", count: 64),
+                statusHint: .completed,
+                createdAt: Date(timeIntervalSince1970: 10))
+            XCTAssertEqual(binding.managedRelativeReference, binding.runID)
+
+            XCTAssertThrowsError(
+                try PlanReference(
+                    requestID: "request-1", planID: "plan-1",
+                    planSHA256: String(repeating: "A", count: 64)))
+            XCTAssertThrowsError(
+                try PlanReference(
+                    requestID: "request-1", planID: "plan-1",
+                    planSHA256: String(repeating: "a", count: 63)))
+            XCTAssertThrowsError(
+                try PlanReference(
+                    requestID: "request-1", planID: "plan-1", planSHA256: sha,
+                    attemptPrivatePathHint: "/private/plan.json"))
+            for unsafe in ["/tmp/run-exact-1", "../run-exact-1", "run/../run-exact-1", "~/.runs"] {
+                XCTAssertThrowsError(
+                    try RunBinding(
+                        bindingID: AttemptBindingID(), turnID: turnID, attemptOrdinal: 1,
+                        runID: "run-exact-1", managedRelativeReference: unsafe,
+                        requestID: plan.requestID, planID: plan.planID,
+                        planSHA256: plan.planSHA256))
+            }
+            XCTAssertThrowsError(
+                try RunBinding(
+                    bindingID: AttemptBindingID(), turnID: turnID, attemptOrdinal: 0,
+                    requestID: plan.requestID, planID: plan.planID,
+                    planSHA256: plan.planSHA256))
+        }
+
+        func testResearchTurnContainsExactlyOneImmutableUserMessage() throws {
+            let message = try UserMessage(
+                id: UserMessageID(),
+                text: "  Compare the exact evidence  ",
+                createdAt: Date(timeIntervalSince1970: 12))
+            let turn = try ResearchTurn(
+                id: ResearchTurnID(),
+                message: message,
+                createdAt: Date(timeIntervalSince1970: 12),
+                stateHint: .planning)
+            XCTAssertEqual(turn.message.text, "Compare the exact evidence")
+            XCTAssertEqual(turn.stateHint, .planning)
+            XCTAssertTrue(turn.attemptBindingIDs.isEmpty)
+        }
     }
 #endif

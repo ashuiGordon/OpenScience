@@ -46,7 +46,7 @@ Conversation-workbench candidate validated locally on 2026-08-27:
 | Swift format/build | Strict format plus warnings-as-errors Debug and Release builds passed |
 | Swift XCTest execution | GitHub full-Xcode macOS CI: 83 passed, 0 failures |
 | App bundle | Embedded helper, `Info.plist`, helper JSON response, and deep ad hoc signature verified |
-| Visual QA | Exact 1487 × 1058 comparison recorded; strict 0.90 similarity/PDF-preview gate remains blocked |
+| Visual QA | Exact 1487 × 1058 comparison and inert PDF preview recorded; strict 0.90 similarity remains blocked |
 
 The candidate closes reviewed cross-conversation action and exact-citation binding failures. It is
 not a claim that the complete feature-003 transaction, VoiceOver, performance, moderated-usability,

@@ -54,6 +54,6 @@ copying another project's logo, brand, proprietary assets, or source code.
 - Titlebar-free focused comparison: `comparison-final-content.png`
 - Full findings and iteration history: [`../../design-qa.md`](../../design-qa.md)
 
-The reference-size shell is implemented, but strict visual acceptance remains blocked: the current
-unmasked SSIM is 0.579766 versus the specification's 0.90 target, and the selected fixture does not
-yet provide a validated native PDF preview.
+The reference-size shell and validated inert PDF preview are implemented, but strict visual
+acceptance remains blocked: the current unmasked SSIM is 0.559633 versus the specification's 0.90
+target.

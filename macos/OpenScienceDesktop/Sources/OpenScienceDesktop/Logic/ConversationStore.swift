@@ -150,11 +150,13 @@ public final class ConversationStore: ObservableObject {
         let cleanPrompt = prompt.map { Redactor.redact($0) }?.trimmingCharacters(
             in: .whitespacesAndNewlines)
         var messages: [ConversationMessage] = []
+        var turns: [ResearchTurn] = []
         if let cleanPrompt, !cleanPrompt.isEmpty {
             try Self.validateUserText(cleanPrompt)
-            messages.append(
-                ConversationMessage(
-                    role: .user, kind: .text, text: cleanPrompt, timestamp: now))
+            let user = try UserMessage(text: cleanPrompt, createdAt: now)
+            messages.append(Self.conversationMessage(user))
+            turns.append(
+                try ResearchTurn(message: user, createdAt: now, stateHint: .planning))
         }
         let session = ConversationSession(
             id: id,
@@ -163,7 +165,8 @@ public final class ConversationStore: ObservableObject {
                 title, fallback: cleanPrompt.map { String($0.prefix(72)) } ?? "新研究"),
             createdAt: now,
             updatedAt: now,
-            messages: messages
+            messages: messages,
+            turns: turns
         )
         next[projectIndex].sessions.append(session)
         next[projectIndex].updatedAt = now
@@ -183,6 +186,20 @@ public final class ConversationStore: ObservableObject {
         id: UUID = UUID(),
         expectedRevision: Int? = nil
     ) throws -> ConversationMessage {
+        if role == .user {
+            guard kind == .text, runReference == nil, artifactReferences.isEmpty else {
+                throw ConversationStoreError.invalidValue("user message kind/references")
+            }
+            guard let revision = expectedRevision ?? revisions[sessionID] else {
+                throw ConversationStoreError.notFound("session revision")
+            }
+            let turn = try appendTurn(
+                sessionID: sessionID,
+                message: UserMessage(
+                    id: UserMessageID(uuid: id), text: text, createdAt: timestamp),
+                expectedRevision: revision)
+            return Self.conversationMessage(turn.message)
+        }
         try checkRevision(sessionID, expected: expectedRevision)
         var next = projects
         let location = try Self.location(sessionID, in: next)
@@ -203,23 +220,150 @@ public final class ConversationStore: ObservableObject {
             }
             return existing
         }
-        if role == .user {
-            guard kind == .text else {
-                throw ConversationStoreError.invalidValue("user message kind")
-            }
-            try Self.validateUserText(candidate.text)
-        }
         next[location.project].sessions[location.session].messages.append(candidate)
         Self.merge(runReference, artifactReferences, into: &next[location.project].sessions[location.session])
-        if role == .user {
-            next[location.project].sessions[location.session].updatedAt = timestamp
-            next[location.project].updatedAt = timestamp
-            try commitCurrent(next, envelopes: [sessionID])
-        } else {
-            try Self.validate(next)
-            projects = next
-        }
+        try Self.validate(next)
+        projects = next
         return candidate
+    }
+
+    /// Atomically appends one immutable user-authored research turn. Replaying the exact same
+    /// message ID is idempotent even when the caller still holds the pre-commit revision.
+    @discardableResult
+    public func appendTurn(
+        sessionID: UUID,
+        message: UserMessage,
+        turnID: ResearchTurnID? = nil,
+        stateHint: TurnStateHint = .planning,
+        expectedRevision: Int
+    ) throws -> ResearchTurn {
+        let currentLocation = try Self.location(sessionID, in: projects)
+        if let existing = projects.lazy.flatMap(\.sessions).flatMap(\.turns).first(where: {
+            $0.message.id == message.id
+        }) {
+            guard
+                projects[currentLocation.project].sessions[currentLocation.session].turns.contains(
+                    where: { $0.id == existing.id }),
+                existing.message == message,
+                turnID == nil || existing.id == turnID
+            else {
+                throw ConversationStoreError.invalidValue("conflicting duplicate message id")
+            }
+            return existing
+        }
+        try checkRevision(sessionID, expected: expectedRevision)
+        var next = projects
+        let location = try Self.location(sessionID, in: next)
+        let turn = try ResearchTurn(
+            id: turnID ?? ResearchTurnID(),
+            message: message,
+            createdAt: message.createdAt,
+            stateHint: stateHint)
+        guard !next.lazy.flatMap(\.sessions).flatMap(\.turns).contains(where: { $0.id == turn.id }) else {
+            throw ConversationStoreError.invalidValue("duplicate turn id")
+        }
+        next[location.project].sessions[location.session].turns.append(turn)
+        next[location.project].sessions[location.session].messages.append(
+            Self.conversationMessage(message))
+        let updatedAt = max(
+            next[location.project].sessions[location.session].updatedAt, message.createdAt)
+        next[location.project].sessions[location.session].updatedAt = updatedAt
+        next[location.project].updatedAt = max(next[location.project].updatedAt, updatedAt)
+        try commitCurrent(next, envelopes: [sessionID])
+        return turn
+    }
+
+    @discardableResult
+    public func bindPlan(
+        sessionID: UUID,
+        turnID: ResearchTurnID,
+        planReference: PlanReference,
+        expectedRevision: Int
+    ) throws -> ResearchTurn {
+        try checkRevision(sessionID, expected: expectedRevision)
+        var next = projects
+        let location = try Self.location(sessionID, in: next)
+        guard
+            let index = next[location.project].sessions[location.session].turns.firstIndex(
+                where: { $0.id == turnID })
+        else { throw ConversationStoreError.notFound("research turn") }
+        guard next[location.project].sessions[location.session].turns[index].attemptBindingIDs.isEmpty
+        else { throw ConversationStoreError.invalidValue("plan already has attempts") }
+        if let existing = next[location.project].sessions[location.session].turns[index].planReference,
+            existing != planReference
+        {
+            throw ConversationStoreError.invalidValue("conflicting plan binding")
+        }
+        next[location.project].sessions[location.session].turns[index].planReference = planReference
+        next[location.project].sessions[location.session].turns[index].stateHint = .awaitingPlanApproval
+        next[location.project].sessions[location.session].status = .awaitingApproval
+        let timestamp = Date()
+        next[location.project].sessions[location.session].updatedAt = timestamp
+        next[location.project].updatedAt = timestamp
+        try commitCurrent(next, envelopes: [sessionID])
+        return next[location.project].sessions[location.session].turns[index]
+    }
+
+    @discardableResult
+    public func bindAttempt(
+        sessionID: UUID,
+        turnID: ResearchTurnID,
+        binding: RunBinding,
+        expectedRevision: Int
+    ) throws -> RunBinding {
+        try checkRevision(sessionID, expected: expectedRevision)
+        var next = projects
+        let location = try Self.location(sessionID, in: next)
+        guard binding.turnID == turnID,
+            let turnIndex = next[location.project].sessions[location.session].turns.firstIndex(
+                where: { $0.id == turnID })
+        else { throw ConversationStoreError.invalidValue("attempt turn identity") }
+        let turn = next[location.project].sessions[location.session].turns[turnIndex]
+        guard let plan = turn.planReference,
+            binding.requestID == plan.requestID,
+            binding.planID == plan.planID,
+            binding.planSHA256 == plan.planSHA256
+        else { throw ConversationStoreError.invalidValue("attempt plan identity") }
+        let sessionBindings = next[location.project].sessions[location.session].bindings
+        if let existing = next.lazy.flatMap(\.sessions).flatMap(\.bindings).first(where: {
+            $0.id == binding.id
+        }) {
+            guard
+                let bindingIndex = sessionBindings.firstIndex(where: { $0.id == binding.id }),
+                existing.turnID == binding.turnID,
+                existing.attemptOrdinal == binding.attemptOrdinal,
+                existing.requestID == binding.requestID,
+                existing.planID == binding.planID,
+                existing.planSHA256 == binding.planSHA256,
+                existing.createdAt == binding.createdAt,
+                existing.runID == nil || existing.runID == binding.runID,
+                existing.managedRelativeReference == nil
+                    || existing.managedRelativeReference == binding.managedRelativeReference
+            else { throw ConversationStoreError.invalidValue("conflicting attempt binding id") }
+            next[location.project].sessions[location.session].bindings[bindingIndex] = binding
+        } else {
+            let attempts = sessionBindings.filter { $0.turnID == turnID }
+            guard binding.attemptOrdinal == attempts.count + 1 else {
+                throw ConversationStoreError.invalidValue("attempt ordinal")
+            }
+            next[location.project].sessions[location.session].bindings.append(binding)
+            next[location.project].sessions[location.session].turns[turnIndex].attemptBindingIDs.append(
+                binding.id)
+        }
+        next[location.project].sessions[location.session].turns[turnIndex].stateHint = TurnStateHint(
+            sessionStatus: binding.statusHint)
+        next[location.project].sessions[location.session].status = binding.statusHint
+        let updatedAt = max(
+            next[location.project].sessions[location.session].updatedAt, binding.createdAt)
+        next[location.project].sessions[location.session].updatedAt = updatedAt
+        next[location.project].updatedAt = max(next[location.project].updatedAt, updatedAt)
+        if let runID = binding.runID {
+            Self.merge(
+                ConversationRunReference(runID: runID, status: .unknown), [],
+                into: &next[location.project].sessions[location.session])
+        }
+        try commitCurrent(next, envelopes: [sessionID])
+        return binding
     }
 
     @discardableResult
@@ -241,6 +385,9 @@ public final class ConversationStore: ObservableObject {
                 where: { $0.id == messageID })
         else { throw ConversationStoreError.notFound("message") }
         let old = next[location.project].sessions[location.session].messages[index]
+        guard old.role != .user else {
+            throw ConversationStoreError.invalidValue("immutable user message")
+        }
         let value = ConversationMessage(
             id: old.id,
             role: old.role,
@@ -250,17 +397,10 @@ public final class ConversationStore: ObservableObject {
             runReference: runReference,
             artifactReferences: artifactReferences
         )
-        if old.role == .user { try Self.validateUserText(value.text) }
         next[location.project].sessions[location.session].messages[index] = value
         Self.merge(runReference, artifactReferences, into: &next[location.project].sessions[location.session])
-        if old.role == .user {
-            next[location.project].sessions[location.session].updatedAt = timestamp
-            next[location.project].updatedAt = timestamp
-            try commitCurrent(next, envelopes: [sessionID])
-        } else {
-            try Self.validate(next)
-            projects = next
-        }
+        try Self.validate(next)
+        projects = next
         return value
     }
 
@@ -860,19 +1000,18 @@ public final class ConversationStore: ObservableObject {
     }
 
     private static func envelope(_ session: ConversationSession, revision: Int) throws -> EnvelopeFile {
-        let messages = try session.messages.filter { $0.role == .user }.map {
-            try validateUserText($0.text)
-            return UserMessageFile(id: $0.id, text: $0.text, createdAt: $0.timestamp)
-        }
+        let turns = try canonicalTurns(session)
         let runIDs = unique(
             session.linkedRunIDs + session.runReferences.map(\.runID)
-                + session.messages.compactMap { $0.runReference?.runID })
+                + session.messages.compactMap { $0.runReference?.runID }
+                + session.bindings.compactMap(\.runID))
         let artifacts = uniqueArtifacts(
             session.artifactReferences + session.messages.flatMap(\.artifactReferences))
         return EnvelopeFile(
             revision: revision,
             conversation: ConversationFile(session),
-            userMessages: messages,
+            turns: turns,
+            bindings: session.bindings,
             draft: session.draft,
             runReferences: try runIDs.map { RunIDFile(runID: try reference($0, field: "run id")) },
             artifactReferences: try artifacts.map {
@@ -917,16 +1056,51 @@ public final class ConversationStore: ObservableObject {
         _ = try parse(value.conversation.conversationID, prefix: "conversation-")
         _ = try parse(value.conversation.projectID, prefix: "project-")
         try text(value.conversation.title, field: "conversation title", limit: 512)
-        guard value.userMessages.count <= ConversationStoreLimits.maximumMessagesPerSession else {
+        guard value.turns.count <= ConversationStoreLimits.maximumMessagesPerSession,
+            value.userMessages.count <= ConversationStoreLimits.maximumMessagesPerSession
+        else {
             throw ConversationStoreError.limitExceeded(
-                "user messages", ConversationStoreLimits.maximumMessagesPerSession)
+                "research turns", ConversationStoreLimits.maximumMessagesPerSession)
         }
-        var messageIDs = Set<UUID>()
+        guard value.turns.isEmpty || value.userMessages.isEmpty else {
+            throw ConversationStoreError.invalidValue("ambiguous turn encoding")
+        }
+        var legacyMessageIDs = Set<UUID>()
         for message in value.userMessages {
-            guard messageIDs.insert(message.id).inserted else {
+            guard legacyMessageIDs.insert(message.id).inserted else {
                 throw ConversationStoreError.invalidValue("duplicate user message")
             }
             try validateUserText(message.text)
+        }
+        var turnIDs = Set<ResearchTurnID>()
+        var messageIDs = Set<UserMessageID>()
+        for turn in value.turns {
+            guard turnIDs.insert(turn.id).inserted, messageIDs.insert(turn.message.id).inserted else {
+                throw ConversationStoreError.invalidValue("duplicate turn/message identity")
+            }
+            try validateUserText(turn.message.text)
+        }
+        let bindingIDs = value.bindings.map(\.id)
+        guard Set(bindingIDs).count == bindingIDs.count else {
+            throw ConversationStoreError.invalidValue("duplicate attempt binding id")
+        }
+        for turn in value.turns {
+            let bindings = value.bindings.filter { $0.turnID == turn.id }
+            guard bindings.map(\.id) == turn.attemptBindingIDs,
+                bindings.enumerated().allSatisfy({ pair in
+                    pair.offset + 1 == pair.element.attemptOrdinal
+                })
+            else { throw ConversationStoreError.invalidValue("turn attempt relationship") }
+            for binding in bindings {
+                guard let plan = turn.planReference,
+                    binding.requestID == plan.requestID,
+                    binding.planID == plan.planID,
+                    binding.planSHA256 == plan.planSHA256
+                else { throw ConversationStoreError.invalidValue("attempt plan identity") }
+            }
+        }
+        guard value.bindings.allSatisfy({ turnIDs.contains($0.turnID) }) else {
+            throw ConversationStoreError.invalidValue("orphan attempt binding")
         }
         if let draft = value.draft { try validateDraft(draft) }
         let runIDs = value.runReferences.map(\.runID)
@@ -947,6 +1121,9 @@ public final class ConversationStore: ObservableObject {
         }
         var sessions = Set<UUID>()
         var messages = Set<UUID>()
+        var turnIDs = Set<ResearchTurnID>()
+        var userMessageIDs = Set<UserMessageID>()
+        var bindingIDs = Set<AttemptBindingID>()
         for project in projects {
             try text(project.title, field: "project title", limit: 512)
             for session in project.sessions {
@@ -975,6 +1152,41 @@ public final class ConversationStore: ObservableObject {
                             "transient artifacts", ConversationStoreLimits.maximumArtifactsPerMessage)
                     }
                 }
+                guard session.turns.count <= ConversationStoreLimits.maximumMessagesPerSession else {
+                    throw ConversationStoreError.limitExceeded(
+                        "research turns", ConversationStoreLimits.maximumMessagesPerSession)
+                }
+                for turn in session.turns {
+                    guard turnIDs.insert(turn.id).inserted,
+                        userMessageIDs.insert(turn.message.id).inserted
+                    else { throw ConversationStoreError.invalidValue("turn/message identity") }
+                    try validateUserText(turn.message.text)
+                    let attempts = session.bindings.filter { $0.turnID == turn.id }
+                    guard attempts.map(\.id) == turn.attemptBindingIDs,
+                        attempts.enumerated().allSatisfy({ pair in
+                            pair.offset + 1 == pair.element.attemptOrdinal
+                        })
+                    else { throw ConversationStoreError.invalidValue("turn attempt relationship") }
+                    for binding in attempts {
+                        guard let plan = turn.planReference,
+                            binding.requestID == plan.requestID,
+                            binding.planID == plan.planID,
+                            binding.planSHA256 == plan.planSHA256
+                        else { throw ConversationStoreError.invalidValue("attempt plan identity") }
+                    }
+                }
+                for binding in session.bindings {
+                    guard bindingIDs.insert(binding.id).inserted,
+                        session.turns.contains(where: { $0.id == binding.turnID })
+                    else { throw ConversationStoreError.invalidValue("attempt binding identity") }
+                }
+                let durableMessages = session.messages.filter { $0.role == .user }
+                guard durableMessages.count == session.turns.count,
+                    zip(durableMessages, session.turns).allSatisfy({ message, turn in
+                        message.id == turn.message.uuid && message.text == turn.message.text
+                            && message.timestamp == turn.message.createdAt
+                    })
+                else { throw ConversationStoreError.invalidValue("turn message projection") }
                 if let draft = session.draft { try validateDraft(draft) }
             }
         }
@@ -1015,6 +1227,33 @@ public final class ConversationStore: ObservableObject {
         guard !trimmed.isEmpty, trimmed.count <= ConversationStoreLimits.maximumMessageCharacters,
             value == Redactor.redact(value)
         else { throw ConversationStoreError.invalidValue("user message") }
+    }
+
+    private static func canonicalTurns(_ session: ConversationSession) throws -> [ResearchTurn] {
+        if !session.turns.isEmpty { return session.turns }
+        return try session.messages.filter { $0.role == .user }.map { message in
+            try validateUserText(message.text)
+            let user = try UserMessage(
+                id: UserMessageID(uuid: message.id),
+                text: message.text,
+                createdAt: message.timestamp)
+            return try ResearchTurn(
+                id: ResearchTurnID(uuid: message.id),
+                message: user,
+                createdAt: message.timestamp,
+                stateHint: .unknown)
+        }
+    }
+
+    nonisolated fileprivate static func conversationMessage(
+        _ value: UserMessage
+    ) -> ConversationMessage {
+        ConversationMessage(
+            id: value.uuid,
+            role: .user,
+            kind: .text,
+            text: value.text,
+            timestamp: value.createdAt)
     }
 
     private static func merge(
@@ -1101,7 +1340,7 @@ public final class ConversationStore: ObservableObject {
         return clean
     }
 
-    private static func unique(_ values: [String]) -> [String] {
+    nonisolated fileprivate static func unique(_ values: [String]) -> [String] {
         var seen = Set<String>()
         return values.filter { seen.insert($0).inserted }
     }
@@ -1506,13 +1745,17 @@ private struct EnvelopeFile: Codable {
     let revision: Int
     let writtenAt: Date
     let conversation: ConversationFile
+    let turns: [ResearchTurn]
+    let bindings: [RunBinding]
+    /// Read-only compatibility with the pre-ResearchTurn v1 envelope.
     let userMessages: [UserMessageFile]
     let draft: ConversationDraft?
     let runReferences: [RunIDFile]
     let artifactReferences: [ArtifactIDFile]
 
     init(
-        revision: Int, conversation: ConversationFile, userMessages: [UserMessageFile],
+        revision: Int, conversation: ConversationFile, turns: [ResearchTurn],
+        bindings: [RunBinding],
         draft: ConversationDraft?, runReferences: [RunIDFile],
         artifactReferences: [ArtifactIDFile]
     ) {
@@ -1520,16 +1763,70 @@ private struct EnvelopeFile: Codable {
         self.revision = revision
         writtenAt = Date()
         self.conversation = conversation
-        self.userMessages = userMessages
+        self.turns = turns
+        self.bindings = bindings
+        userMessages = []
         self.draft = draft
         self.runReferences = runReferences
         self.artifactReferences = artifactReferences
     }
 
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        revision = try values.decode(Int.self, forKey: .revision)
+        writtenAt = try values.decode(Date.self, forKey: .writtenAt)
+        conversation = try values.decode(ConversationFile.self, forKey: .conversation)
+        turns = try values.decodeIfPresent([ResearchTurn].self, forKey: .turns) ?? []
+        bindings = try values.decodeIfPresent([RunBinding].self, forKey: .bindings) ?? []
+        userMessages = try values.decodeIfPresent([UserMessageFile].self, forKey: .userMessages) ?? []
+        draft = try values.decodeIfPresent(ConversationDraft.self, forKey: .draft)
+        runReferences = try values.decodeIfPresent([RunIDFile].self, forKey: .runReferences) ?? []
+        artifactReferences =
+            try values.decodeIfPresent(
+                [ArtifactIDFile].self, forKey: .artifactReferences) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(schemaVersion, forKey: .schemaVersion)
+        try values.encode(revision, forKey: .revision)
+        try values.encode(writtenAt, forKey: .writtenAt)
+        try values.encode(conversation, forKey: .conversation)
+        try values.encode(turns, forKey: .turns)
+        try values.encode(bindings, forKey: .bindings)
+        try values.encodeIfPresent(draft, forKey: .draft)
+        try values.encode(runReferences, forKey: .runReferences)
+        try values.encode(artifactReferences, forKey: .artifactReferences)
+    }
+
     var value: ConversationSession {
         get throws {
-            let runs = runReferences.map {
-                ConversationRunReference(runID: $0.runID, status: .unknown)
+            let durableTurns: [ResearchTurn]
+            if turns.isEmpty, !userMessages.isEmpty {
+                durableTurns = try userMessages.map { message in
+                    let user = try UserMessage(
+                        id: UserMessageID(uuid: message.id),
+                        text: message.text,
+                        createdAt: message.createdAt)
+                    return try ResearchTurn(
+                        id: ResearchTurnID(uuid: message.id),
+                        message: user,
+                        createdAt: message.createdAt,
+                        stateHint: .unknown)
+                }
+            } else {
+                durableTurns = turns.map { original in
+                    var turn = original
+                    turn.stateHint = turn.stateHint.downgradedForRelaunch
+                    return turn
+                }
+            }
+            let durableBindings = try bindings.map { try $0.downgradedForRelaunch }
+            let runIDs = ConversationStore.unique(
+                runReferences.map(\.runID) + durableBindings.compactMap(\.runID))
+            let runs = runIDs.map {
+                ConversationRunReference(runID: $0, status: .unknown)
             }
             let artifacts = try artifactReferences.map {
                 try ConversationArtifactReference(
@@ -1543,21 +1840,20 @@ private struct EnvelopeFile: Codable {
                 updatedAt: conversation.updatedAt,
                 status: conversation.statusHint,
                 isArchived: conversation.archivedAt != nil,
-                messages: userMessages.map {
-                    ConversationMessage(
-                        id: $0.id, role: .user, kind: .text, text: $0.text,
-                        timestamp: $0.createdAt)
-                },
+                messages: durableTurns.map { ConversationStore.conversationMessage($0.message) },
                 linkedRunIDs: runs.map(\.runID),
                 draft: draft,
                 runReferences: runs,
-                artifactReferences: artifacts)
+                artifactReferences: artifacts,
+                turns: durableTurns,
+                bindings: durableBindings)
         }
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version", revision, writtenAt = "written_at", conversation
-        case userMessages = "user_messages", draft, runReferences = "run_references"
+        case turns, bindings, userMessages = "user_messages", draft
+        case runReferences = "run_references"
         case artifactReferences = "artifact_references"
     }
 }

@@ -21,7 +21,8 @@ let package = Package(
             name: "OpenScienceDesktop",
             dependencies: ["OpenScienceCore", "OpenScienceDesktopLogic"],
             path: "Sources/OpenScienceDesktop",
-            exclude: ["Logic"]
+            exclude: ["Logic"],
+            resources: [.copy("Resources")]
         ),
         .target(
             name: "OpenScienceDesktopLogic",
@@ -35,7 +36,8 @@ let package = Package(
         .testTarget(
             name: "OpenScienceDesktopTests",
             dependencies: ["OpenScienceCore", "OpenScienceDesktopLogic"],
-            path: "Tests/OpenScienceDesktopTests"
+            path: "Tests/OpenScienceDesktopTests",
+            resources: [.copy("Fixtures")]
         ),
     ]
 )
