@@ -239,6 +239,10 @@
             ])
             XCTAssertEqual(projection.steps["discover"], .completed)
             XCTAssertEqual(projection.sources, 2)
+            XCTAssertEqual(
+                projection.activityRows.map(\.eventType),
+                ["step.started", "step.completed"]
+            )
 
             var binding = AttemptBinding()
             let first = binding.begin(workspace: URL(fileURLWithPath: "/tmp/job-1"))
@@ -252,6 +256,49 @@
                 binding.bind(runDirectory: URL(fileURLWithPath: "/tmp/job-2/run-swapped"), for: second)
             )
             XCTAssertEqual(binding.cancelTarget(for: second)?.path, "/tmp/job-2/run-new")
+        }
+
+        func testActiveProjectionUsesOnlyBoundedTrustedEventActivity() {
+            var events = [
+                DesktopRunEvent(
+                    type: "provider.started",
+                    stepID: "discover",
+                    payload: .object([
+                        "provider": .string("fixture"),
+                        "message": .string("UNTRUSTED-MESSAGE-MUST-NOT-RENDER"),
+                    ])
+                ),
+                DesktopRunEvent(
+                    type: "provider.completed",
+                    stepID: "discover",
+                    payload: .object([
+                        "provider": .string("fixture"),
+                        "records": .number(3),
+                        "output_ids": .array([.string("secret-record-id")]),
+                    ])
+                ),
+                DesktopRunEvent(
+                    type: "stdout",
+                    stepID: nil,
+                    payload: .object(["text": .string("do not trust raw stdout")])
+                ),
+            ]
+            events += (0..<150).map { index in
+                DesktopRunEvent(
+                    type: index.isMultiple(of: 2) ? "step.started" : "step.completed",
+                    stepID: "extract",
+                    payload: .object([:])
+                )
+            }
+
+            let projection = ActiveRunProjector.project(events)
+
+            XCTAssertEqual(projection.activityRows.count, ActiveRunProjector.maximumActivityRows)
+            XCTAssertFalse(projection.activityRows.contains { $0.eventType == "stdout" })
+            let rendered = projection.activityRows.map { [$0.title, $0.detail ?? ""].joined() }
+                .joined(separator: "\n")
+            XCTAssertFalse(rendered.contains("UNTRUSTED-MESSAGE-MUST-NOT-RENDER"))
+            XCTAssertFalse(rendered.contains("secret-record-id"))
         }
 
         func testTerminalReconciliationAndExternalURLPolicy() throws {

@@ -397,16 +397,43 @@ public enum DesktopStepState: String, Equatable, Sendable {
     case cancelled
 }
 
+public struct DesktopActivityRow: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let eventType: String
+    public let stepID: String?
+    public let title: String
+    public let detail: String?
+    public let state: DesktopStepState?
+
+    public init(
+        id: String,
+        eventType: String,
+        stepID: String?,
+        title: String,
+        detail: String? = nil,
+        state: DesktopStepState? = nil
+    ) {
+        self.id = id
+        self.eventType = eventType
+        self.stepID = stepID
+        self.title = title
+        self.detail = detail
+        self.state = state
+    }
+}
+
 public struct ActiveRunProjection: Equatable, Sendable {
     public let steps: [String: DesktopStepState]
     public let sources: Int
     public let evidence: Int
     public let claims: Int
     public let cancellationRequested: Bool
+    public let activityRows: [DesktopActivityRow]
 }
 
 public enum ActiveRunProjector {
     public static let stepIDs = ["discover", "extract", "synthesize", "validate", "report"]
+    public static let maximumActivityRows = 100
 
     public static func project(_ events: [DesktopRunEvent]) -> ActiveRunProjection {
         var steps = Dictionary(uniqueKeysWithValues: stepIDs.map { ($0, DesktopStepState.pending) })
@@ -414,7 +441,8 @@ public enum ActiveRunProjector {
         var evidence = 0
         var claims = 0
         var cancellation = false
-        for event in events {
+        var activityRows: [DesktopActivityRow] = []
+        for (index, event) in events.enumerated() {
             if let step = event.stepID, steps[step] != nil {
                 if event.type == "step.started" { steps[step] = .running }
                 if event.type == "step.completed" { steps[step] = .completed }
@@ -426,6 +454,12 @@ public enum ActiveRunProjector {
             sources = max(sources, outputs?["source_ids"]?.arrayValue?.count ?? 0)
             evidence = max(evidence, outputs?["evidence_ids"]?.arrayValue?.count ?? 0)
             claims = max(claims, outputs?["claim_ids"]?.arrayValue?.count ?? 0)
+            if let row = activityRow(for: event, index: index) {
+                activityRows.append(row)
+                if activityRows.count > maximumActivityRows {
+                    activityRows.removeFirst(activityRows.count - maximumActivityRows)
+                }
+            }
         }
         if cancellation {
             for step in stepIDs where steps[step] == .running { steps[step] = .cancelled }
@@ -435,8 +469,124 @@ public enum ActiveRunProjector {
             sources: sources,
             evidence: evidence,
             claims: claims,
-            cancellationRequested: cancellation
+            cancellationRequested: cancellation,
+            activityRows: activityRows
         )
+    }
+
+    private static func activityRow(
+        for event: DesktopRunEvent,
+        index: Int
+    ) -> DesktopActivityRow? {
+        let rowID = "event-\(index)-\(event.type)-\(event.stepID ?? "run")"
+        let step = event.stepID.flatMap { stepIDs.contains($0) ? $0 : nil }
+        switch event.type {
+        case "step.started":
+            guard let step else { return nil }
+            return DesktopActivityRow(
+                id: rowID,
+                eventType: event.type,
+                stepID: step,
+                title: "开始步骤：\(stepTitle(step))",
+                state: .running
+            )
+        case "step.completed":
+            guard let step else { return nil }
+            return DesktopActivityRow(
+                id: rowID,
+                eventType: event.type,
+                stepID: step,
+                title: "完成步骤：\(stepTitle(step))",
+                state: .completed
+            )
+        case "step.failed":
+            guard let step else { return nil }
+            return DesktopActivityRow(
+                id: rowID,
+                eventType: event.type,
+                stepID: step,
+                title: "步骤失败：\(stepTitle(step))",
+                state: .failed
+            )
+        case "step.cancelled":
+            guard let step else { return nil }
+            return DesktopActivityRow(
+                id: rowID,
+                eventType: event.type,
+                stepID: step,
+                title: "步骤已取消：\(stepTitle(step))",
+                state: .cancelled
+            )
+        case "provider.started", "provider.completed", "provider.failed":
+            guard let provider = boundedIdentifier(event.payload["provider"]?.stringValue) else {
+                return nil
+            }
+            let title: String
+            let state: DesktopStepState
+            if event.type == "provider.started" {
+                title = "Provider 开始：\(provider)"
+                state = .running
+            } else if event.type == "provider.completed" {
+                title = "Provider 完成：\(provider)"
+                state = .completed
+            } else {
+                title = "Provider 失败：\(provider)"
+                state = .failed
+            }
+            let records = event.payload["records"]?.intValue.map { max(0, min($0, 1_000_000)) }
+            return DesktopActivityRow(
+                id: rowID,
+                eventType: event.type,
+                stepID: step,
+                title: title,
+                detail: records.map { "记录数 \($0)" },
+                state: state
+            )
+        case "run.cancellation_requested":
+            return DesktopActivityRow(
+                id: rowID,
+                eventType: event.type,
+                stepID: nil,
+                title: "已记录取消请求",
+                state: .cancelled
+            )
+        case "run.cancelled":
+            return DesktopActivityRow(
+                id: rowID,
+                eventType: event.type,
+                stepID: nil,
+                title: "运行已取消",
+                state: .cancelled
+            )
+        case "run.interrupted":
+            return DesktopActivityRow(
+                id: rowID,
+                eventType: event.type,
+                stepID: nil,
+                title: "运行已中断"
+            )
+        default:
+            return nil
+        }
+    }
+
+    private static func boundedIdentifier(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let cleaned = Redactor.redact(value)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+        return String(cleaned.prefix(128))
+    }
+
+    private static func stepTitle(_ stepID: String) -> String {
+        switch stepID {
+        case "discover": return "发现来源"
+        case "extract": return "提取证据"
+        case "synthesize": return "合成结论"
+        case "validate": return "验证"
+        case "report": return "生成报告"
+        default: return stepID
+        }
     }
 }
 

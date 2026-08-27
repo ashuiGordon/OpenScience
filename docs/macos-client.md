@@ -36,6 +36,25 @@ finishes. It never interprets a successful ad hoc seal as distribution signing o
 
 ### Latest development-preview evidence
 
+Conversation-workbench candidate validated locally on 2026-08-27:
+
+| Gate | Result |
+|---|---|
+| Primary UI | Native three-column project/conversation, timeline/composer, and research preview |
+| Python deterministic suite | 140 passed; 3 explicit live tests deselected |
+| Python format/lint/types | Ruff format/check and strict mypy passed |
+| Swift format/build | Strict format plus warnings-as-errors Debug and Release builds passed |
+| New conversation tests | 23 XCTest cases compile and link; execution awaits full-Xcode CI |
+| App bundle | Embedded helper, `Info.plist`, helper JSON response, and deep ad hoc signature verified |
+| Visual QA | Exact 1487 × 1058 comparison recorded; strict 0.90 similarity/PDF-preview gate remains blocked |
+
+The candidate closes reviewed cross-conversation action and exact-citation binding failures. It is
+not a claim that the complete feature-003 transaction, VoiceOver, performance, moderated-usability,
+or production-distribution gates have passed. See [`design-qa.md`](../design-qa.md) and the
+[conversation-workbench quickstart](../specs/003-conversation-workbench/quickstart.md).
+
+Previous feature-002 baseline evidence follows for the unchanged engine bridge:
+
 Validated locally on 2026-08-21 with macOS 26.4.1 on Apple silicon, Swift 6.2.4, and Python
 3.11.15:
 
@@ -118,12 +137,28 @@ non-notarized development/direct build.
 
 ## Use the research workflow
 
+The app opens into one native workbench:
+
+- **Left:** local research projects, New Conversation, local search, dated/archived sessions, and
+  runtime/Providers/History/Settings routes.
+- **Center:** chronological user and OpenScience items, inline plan/network/run/result/error cards,
+  and a pinned multiline composer. Advanced research fields remain in **Research Settings** beside
+  the composer rather than replacing the conversation.
+- **Right:** collapsible Context, Plan, Evidence, and Artifacts tabs. Retrieved material is inert;
+  exact citation selection uses run, claim, evidence, and source IDs.
+
+Conversation metadata is stored below Application Support as a safe workspace index plus one
+owner-only envelope per conversation. Only user-authored text, safe drafts/layout, and typed
+run/artifact identifiers persist. Credentials, approvals, network grants, active-process claims,
+stdout/stderr, evidence passages, and report bodies do not enter conversation storage. Engine run
+artifacts remain authoritative and are revalidated before consequential actions.
+
 | Task | Desktop behavior | Engine authority |
 |---|---|---|
-| Create research | Enter a question, limits, providers, and current local roots | `plan --json` creates the finite reviewed plan |
+| Create research | Start a conversation, compose a question, and optionally edit Research Settings | `plan --json` creates the finite reviewed plan |
 | Approve a plan | Review steps, provider risks, local roots, and limits; approve explicitly | `run --plan … --yes --json` executes only after approval |
 | Allow network access | Confirm named network providers and the per-attempt request bound | `--allow-network` is omitted unless the one-time grant is consumed |
-| Follow progress | View current step, counts, and bounded diagnostics | Complete records from the exact run's `events.jsonl` are the progress source |
+| Follow progress | View one bound inline run card with steps, counts, and trusted activity | Complete records from the exact run's `events.jsonl` are the only timeline progress source |
 | Inspect history | Filter local runs and inspect claims, evidence, sources, and provenance | Recorded artifacts are validated before mutation or verified presentation |
 | Cancel | Request cancellation for the exact run discovered for the active attempt | `cancel <run-directory> --json` writes the durable request |
 | Resume | Revalidate, review completed/remaining steps, and restore permissions | `resume … --yes --json` continues the same recorded run |
@@ -189,7 +224,7 @@ source opening is a separate action restricted to HTTP or HTTPS destinations.
 
 | Symptom | Likely cause | Recovery |
 |---|---|---|
-| New Research is disabled | Engine path is absent, unsafe, or incompatible | Select the absolute `.venv/bin/openscience` path or rebuild the bundled helper; confirm `openscience --version` prints one `0.1.x` line |
+| Composer Send is disabled | Engine path is absent/unsafe/incompatible, another mutation owns the runtime, or privacy validation blocks the draft | Open Settings/runtime status, verify the helper, or return to the active conversation; confirm `openscience --version` prints one `0.1.x` line |
 | Provider list is empty | Engine probe or local provider discovery failed | Run `uv run openscience providers --json`, then use **Refresh Providers** |
 | A network provider is denied | The per-attempt grant was declined, expired, or not requested | Return to plan/resume review and explicitly allow only the current attempt |
 | A local source is unavailable on resume | Roots are not persisted as durable authorization | Reselect the exact directory before approving resume |
@@ -202,4 +237,4 @@ source opening is a separate action restricted to HTTP or HTTPS destinations.
 For the precise process, event, credential, and reconciliation rules, see the
 [desktop CLI bridge contract](../specs/002-macos-desktop-client/contracts/cli-bridge.md). For the
 visible permission and accessibility behavior, see the
-[desktop UI contract](../specs/002-macos-desktop-client/contracts/ui-contract.md).
+[conversation workbench UI contract](../specs/003-conversation-workbench/contracts/ui-contract.md).

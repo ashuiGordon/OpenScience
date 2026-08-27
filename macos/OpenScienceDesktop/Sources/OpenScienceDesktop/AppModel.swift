@@ -28,6 +28,13 @@ enum WorkspaceSection: String, CaseIterable, Identifiable {
     }
 }
 
+private extension String {
+    var nilIfEmpty: String? {
+        let value = trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+}
+
 struct ActivityLog: Identifiable, Equatable {
     let id = UUID()
     let timestamp: Date
@@ -77,8 +84,24 @@ final class AppModel: ObservableObject {
     @Published var resolvedEngine: ResolvedEngine?
     @Published var claimEvidenceLinks: [ClaimEvidenceSourceLink] = []
     @Published var evidenceJoinError: String?
+    @Published var isInspectorPresented = true
+    @Published var isSidebarPresented = true
+    @Published var workbenchAvailableWidth: CGFloat = 1_440
+    @Published var prioritizesInspectorAtNarrowWidth = false
+    @Published var inspectorSection: WorkbenchInspectorSection = .context
+    @Published var conversationPersistenceIssue: String?
+    @Published var designPreviewEvidenceRows: [WorkbenchEvidenceViewData] = []
+    @Published var designPreviewArtifacts: [WorkbenchArtifactViewData] = []
+    @Published var designPreviewReportMarkdown = ""
+    @Published var conversationSearchFocusToken = UUID()
+    @Published var conversationContentFindFocusToken = UUID()
+    @Published var safeEscapeToken = UUID()
+    @Published var conversationReselectionNotice = ""
+    @Published var workbenchSelectedEvidenceID: String?
 
     let settings = ClientSettings()
+    let conversations: ConversationStore
+    let isDesignPreview: Bool
     private let client = OpenScienceCLIClient()
     private let controlClient = OpenScienceCLIClient()
     private let terminalClient = OpenScienceCLIClient()
@@ -96,16 +119,1010 @@ final class AppModel: ObservableObject {
     private var resumeNetworkGrant = OneTimeNetworkGrant()
     private var attemptBinding = AttemptBinding()
     private var engineProbeID = UUID()
+    private var activeConversationSessionID: UUID?
+    private var activeConversationRunMessageID: UUID?
+    private var lastPersistedProjection: ActiveRunProjection?
 
     var filteredRuns: [RunListItem] { historyQuery.apply(to: runs) }
     var hasActiveAttempt: Bool { isRunning && attemptBinding.attemptID != nil }
 
     init() {
+        isDesignPreview = CommandLine.arguments.contains("--design-preview")
+        let storeResult = Self.makeConversationStore(isDesignPreview: isDesignPreview)
+        conversations = storeResult.store
+        conversationPersistenceIssue =
+            storeResult.issue
+            ?? storeResult.store.issues.first.map {
+                "\($0.outcome)：\($0.safeDetail)"
+            }
         draft.sourceNames = []
+        if isDesignPreview {
+            seedDesignPreview()
+            return
+        }
+        restoreConversationLayout()
+        _ = restoreConversationDraftForSelection()
         Task { @MainActor in
             refreshHistory()
             probeEngine()
         }
+    }
+
+    var workbenchCanSubmit: Bool {
+        engineAvailable && !isPreparingPlan && !isRunning && pendingPlan == nil
+            && !(draft.useNetworkModel && !draft.localRoots.isEmpty)
+    }
+
+    var workbenchCanOfferExport: Bool {
+        guard engineAvailable, let run = selectedRun,
+            [.completed, .partial].contains(run.status),
+            run.structuralIssue == nil,
+            let state = validationStates[run.directory], state.isFresh(for: run.updatedAt)
+        else { return false }
+        return state.permitsMutation
+    }
+
+    func workbenchFindMatchCount(_ query: String) -> Int {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return 0 }
+        var values = conversations.selectedSession?.messages.map(\.text) ?? []
+        if let detail = runDetail {
+            values.append(detail.reportMarkdown)
+            values.append(
+                contentsOf: detail.sources.flatMap {
+                    [$0.title, $0.abstractOrExcerpt ?? ""]
+                })
+            values.append(contentsOf: detail.evidence.map(\.passage))
+            values.append(contentsOf: detail.claims.map(\.text))
+        }
+        return values.reduce(0) { total, value in
+            let source = value as NSString
+            var count = 0
+            var searchRange = NSRange(location: 0, length: source.length)
+            while searchRange.length > 0 {
+                let found = source.range(
+                    of: needle,
+                    options: [.caseInsensitive, .diacriticInsensitive],
+                    range: searchRange
+                )
+                if found.location == NSNotFound { break }
+                count += 1
+                let nextLocation = found.location + max(found.length, 1)
+                searchRange = NSRange(
+                    location: nextLocation,
+                    length: max(0, source.length - nextLocation)
+                )
+            }
+            return total + count
+        }
+    }
+
+    var hasActiveRunInAnotherConversation: Bool {
+        isRunning && activeConversationSessionID != nil
+            && activeConversationSessionID != conversations.selectedSessionID
+    }
+
+    var isSelectedActiveConversation: Bool {
+        conversations.selectedSessionID != nil
+            && conversations.selectedSessionID == activeConversationSessionID
+    }
+
+    var isSidebarEffectivelyVisible: Bool {
+        isDesignPreview
+            || (isSidebarPresented && workbenchAvailableWidth >= 820
+                && !prioritizesInspectorAtNarrowWidth)
+    }
+
+    var isInspectorEffectivelyVisible: Bool {
+        isDesignPreview
+            || (isInspectorPresented
+                && (workbenchAvailableWidth >= 1_220
+                    || (prioritizesInspectorAtNarrowWidth && workbenchAvailableWidth >= 984)))
+    }
+
+    var workbenchComposerDraftText: String {
+        conversations.selectedSession?.draft?.text ?? ""
+    }
+
+    var workbenchModelName: String {
+        if !draft.useNetworkModel { return "本地 Extractive" }
+        guard !settings.modelConfigPath.isEmpty else { return "OpenAI-compatible" }
+        return URL(fileURLWithPath: settings.modelConfigPath).deletingPathExtension().lastPathComponent
+    }
+
+    var workbenchToolAvailabilityText: String {
+        if isDesignPreview { return "5/5 可用" }
+        return "\(providers.filter(\.available).count)/\(providers.count) 可用"
+    }
+
+    var workbenchNetworkStatus: String {
+        if isSelectedActiveConversation, pendingPlanContext?.requiresNetworkGrant == true {
+            return planNetworkAcknowledged ? "本次已批准" : "待批准访问"
+        }
+        return draft.sourceNames.contains(where: { ["openalex", "crossref"].contains($0) })
+            || draft.useNetworkModel
+            ? "按计划授权" : "离线"
+    }
+
+    var workbenchNetworkDestinations: [String] {
+        if isSelectedActiveConversation, let context = pendingPlanContext {
+            return context.networkCapabilities.compactMap(\.destination)
+        }
+        if isDesignPreview {
+            return ["cafa.org", "proteingym.org", "pubmed.ncbi.nlm.nih.gov", "arxiv.org"]
+        }
+        return []
+    }
+
+    var workbenchPlanSteps: [WorkbenchPlanStepViewData] {
+        if isSelectedActiveConversation, let steps = pendingPlanContext?.plan.steps, !steps.isEmpty {
+            return steps.map {
+                WorkbenchPlanStepViewData(
+                    id: $0.stepID,
+                    title: $0.title,
+                    purpose: $0.purpose,
+                    dependencies: $0.dependencies,
+                    capability: $0.capability.nilIfEmpty ?? "unknown — capability not recorded",
+                    completionCondition: $0.completionCondition.nilIfEmpty
+                        ?? "unknown — completion condition not recorded",
+                    recordedStatus: $0.status.nilIfEmpty ?? "unknown — status not recorded"
+                )
+            }
+        }
+        if let planValue = runDetail?.manifest["plan"],
+            let data = try? JSONEncoder().encode(planValue),
+            let plan = try? JSONDecoder().decode(ResearchPlanRecord.self, from: data),
+            !plan.steps.isEmpty
+        {
+            return plan.steps.map {
+                WorkbenchPlanStepViewData(
+                    id: $0.stepID,
+                    title: $0.title,
+                    purpose: $0.purpose,
+                    dependencies: $0.dependencies,
+                    capability: $0.capability.nilIfEmpty ?? "unknown — capability not recorded",
+                    completionCondition: $0.completionCondition.nilIfEmpty
+                        ?? "unknown — completion condition not recorded",
+                    recordedStatus: $0.status.nilIfEmpty ?? "unknown — status not recorded"
+                )
+            }
+        }
+        if let planMessage = conversations.selectedSession?.messages.last(where: { $0.kind == .plan }) {
+            let titles = planMessage.text.split(whereSeparator: \.isNewline).dropFirst()
+            if !titles.isEmpty {
+                return titles.enumerated().map { index, line in
+                    WorkbenchPlanStepViewData(
+                        id: index < ActiveRunProjector.stepIDs.count
+                            ? ActiveRunProjector.stepIDs[index] : "step-\(index + 1)",
+                        title: line.replacingOccurrences(
+                            of: #"^\d+\.\s*"#,
+                            with: "",
+                            options: .regularExpression
+                        ),
+                        purpose: "unknown — purpose not available in recorded timeline text",
+                        dependencies: [
+                            "unknown — dependencies not available in recorded timeline text"
+                        ],
+                        capability: "unknown — capability not available in recorded timeline text",
+                        completionCondition:
+                            "unknown — completion condition not available in recorded timeline text",
+                        recordedStatus: "unknown — status not available in recorded timeline text"
+                    )
+                }
+            }
+        }
+        return []
+    }
+
+    var workbenchPlanCapabilities: [String] {
+        guard isSelectedActiveConversation, let context = pendingPlanContext else {
+            if let capabilities = runDetail?.manifest["capabilities"]?.arrayValue {
+                let values: [String] = capabilities.compactMap { capability -> String? in
+                    guard let name = capability["name"]?.stringValue else { return nil }
+                    let risk = capability["risk"]?.stringValue ?? "recorded"
+                    return "\(name) · \(risk.replacingOccurrences(of: "_", with: " "))"
+                }
+                return values.isEmpty
+                    ? ["unknown — provider capability and risk not recorded"] : values
+            }
+            if isDesignPreview {
+                return ["公开网络读取 · 一次性授权", "本地计算 · 无外发", "报告写入 · Run 工作区"]
+            }
+            return workbenchPlanSteps.isEmpty
+                ? [] : ["unknown — provider capability and risk not recorded"]
+        }
+        return (context.sources + [context.synthesizer]).map {
+            "\($0.name) · \($0.risk.replacingOccurrences(of: "_", with: " "))"
+        }
+    }
+
+    var workbenchPlanLimits: [(label: String, value: String)] {
+        if isSelectedActiveConversation, let context = pendingPlanContext {
+            return [
+                ("记录上限", "\(context.maxRecords)"),
+                ("网络请求上限", "\(context.maxNetworkRequests)"),
+                ("超时", "\(context.timeoutSeconds) 秒"),
+            ]
+        }
+        if let limits = runDetail?.manifest["request"]?["limits"] {
+            return [
+                ("记录上限", limits["max_records"]?.intValue.map(String.init) ?? "unknown"),
+                (
+                    "网络请求上限",
+                    limits["max_network_requests"]?.intValue.map(String.init) ?? "unknown"
+                ),
+                (
+                    "超时",
+                    limits["timeout_seconds"]?.intValue.map { "\($0) 秒" } ?? "unknown"
+                ),
+            ]
+        }
+        if isDesignPreview {
+            return [
+                ("记录上限", "92"),
+                ("网络请求上限", "16"),
+                ("超时", "300 秒"),
+            ]
+        }
+        return [
+            ("记录上限", "unknown — not recorded"),
+            ("网络请求上限", "unknown — not recorded"),
+            ("超时", "unknown — not recorded"),
+        ]
+    }
+
+    var workbenchSourceNames: String {
+        var names = draft.sourceNames
+        if !draft.localRoots.isEmpty { names.append("本地目录") }
+        if !draft.fixtureFiles.isEmpty { names.append("Fixture") }
+        return names.isEmpty ? "尚未选择" : names.joined(separator: "、")
+    }
+
+    var workbenchQuestion: String {
+        if isSelectedActiveConversation, let question = pendingPlanContext?.question, !question.isEmpty {
+            return question
+        }
+        if let question = runDetail?.item.question, !question.isEmpty { return question }
+        return conversations.selectedSession?.messages.last(where: { $0.role == .user })?.text
+            ?? "尚未提交"
+    }
+
+    var workbenchSessionStatusText: String {
+        guard let status = conversations.selectedSession?.status else { return "未选择" }
+        switch status {
+        case .draft: return "草稿"
+        case .planning: return "正在规划"
+        case .awaitingApproval: return "等待批准"
+        case .running: return "正在运行"
+        case .completed: return "已完成"
+        case .partial: return "部分完成"
+        case .failed: return "失败"
+        case .cancelled: return "已取消"
+        case .interrupted: return "已中断"
+        case .invalid: return "完整性无效"
+        case .unknown: return "待重新核验"
+        }
+    }
+
+    var workbenchEvidenceRows: [WorkbenchEvidenceViewData] {
+        if let detail = runDetail {
+            guard Set(detail.sources.map(\.sourceID)).count == detail.sources.count,
+                Set(detail.evidence.map(\.evidenceID)).count == detail.evidence.count
+            else { return [] }
+            let sources = Dictionary(uniqueKeysWithValues: detail.sources.map { ($0.sourceID, $0) })
+            let links = Dictionary(grouping: claimEvidenceLinks, by: { $0.evidence.evidenceID })
+            return detail.evidence.map { evidence in
+                let source = sources[evidence.sourceID]
+                let evidenceLinks = links[evidence.evidenceID] ?? []
+                let authorText =
+                    source?.authors.prefix(3).joined(separator: ", ")
+                    .nilIfEmpty ?? "unknown — authors not recorded"
+                let publication =
+                    source?.publicationDate?.nilIfEmpty
+                    ?? "unknown — publication date not recorded"
+                let citation = "\(authorText) (\(publication)). \(source?.title ?? evidence.sourceID)"
+                let claimKinds = Set(evidenceLinks.map(\.claim.kind).filter { !$0.isEmpty })
+                    .sorted()
+                let confidences = evidenceLinks.compactMap(\.claim.confidence)
+                    .map { String(format: "%.3f", $0) }
+                let limitations = Array(
+                    Set(evidenceLinks.flatMap(\.claim.limitations).filter { !$0.isEmpty })
+                ).sorted()
+                let retrievals: [String] =
+                    source?.retrievals.map { retrieval in
+                        let provider =
+                            retrieval.provider.nilIfEmpty
+                            ?? "unknown provider"
+                        let timestamp =
+                            retrieval.retrievedAt.nilIfEmpty
+                            ?? "unknown retrieval time"
+                        return "\(provider) · \(timestamp)"
+                    } ?? []
+                return WorkbenchEvidenceViewData(
+                    id: evidence.evidenceID,
+                    sourceID: evidence.sourceID,
+                    title: source?.title.nilIfEmpty ?? "unknown — source title not recorded",
+                    citation: citation,
+                    passage: evidence.passage.nilIfEmpty ?? "unknown — evidence passage not recorded",
+                    locator: evidence.locator.nilIfEmpty ?? "unknown — locator not recorded",
+                    url: source?.landingURL.flatMap(URL.init(string:)),
+                    stance: evidence.stance.nilIfEmpty ?? "unknown — stance not recorded",
+                    relevance: String(format: "%.3f", evidence.relevance),
+                    claimKind: claimKinds.isEmpty
+                        ? "unknown — no joined claim kind" : claimKinds.joined(separator: ", "),
+                    confidence: confidences.isEmpty
+                        ? "unknown — confidence not recorded" : confidences.joined(separator: ", "),
+                    limitations: evidenceLinks.isEmpty
+                        ? ["unknown — no joined claim limitations"]
+                        : (limitations.isEmpty ? ["none recorded"] : limitations),
+                    license: evidence.license?.nilIfEmpty ?? source?.license?.nilIfEmpty
+                        ?? "unknown — license not recorded",
+                    sourceStatus: source?.status?.nilIfEmpty
+                        ?? "unknown — source status not recorded",
+                    retrievalProvenance: retrievals.isEmpty
+                        ? ["unknown — retrieval provenance not recorded"] : retrievals,
+                    createdByStep: evidence.createdByStep?.nilIfEmpty
+                        ?? "unknown — producing step not recorded",
+                    contentHash: evidence.contentHash?.nilIfEmpty ?? source?.contentHash?.nilIfEmpty
+                        ?? "unknown — content hash not recorded"
+                )
+            }
+        }
+        return designPreviewEvidenceRows
+    }
+
+    var workbenchArtifacts: [WorkbenchArtifactViewData] {
+        var values: [WorkbenchArtifactViewData] = []
+        if let detail = runDetail {
+            values = [
+                WorkbenchArtifactViewData(
+                    id: "report-\(detail.item.runID)",
+                    title: "研究报告",
+                    subtitle: "Markdown · \(detail.item.claimCount) 条结论",
+                    symbol: "doc.richtext"
+                ),
+                WorkbenchArtifactViewData(
+                    id: "manifest-\(detail.item.runID)",
+                    title: "运行清单",
+                    subtitle: "JSON · 可验证审计记录",
+                    symbol: "checkmark.shield"
+                ),
+            ]
+        }
+        let referenced =
+            conversations.selectedSession?.messages
+            .flatMap(\.artifactReferences)
+            .map {
+                WorkbenchArtifactViewData(
+                    id: $0.id,
+                    title: $0.title,
+                    subtitle: $0.kind.rawValue.capitalized,
+                    symbol: artifactSymbol($0.kind)
+                )
+            } ?? []
+        for value in referenced where !values.contains(where: { $0.id == value.id }) {
+            values.append(value)
+        }
+        return values.isEmpty ? designPreviewArtifacts : values
+    }
+
+    var workbenchReportMarkdown: String {
+        if let report = runDetail?.reportMarkdown, !report.isEmpty { return report }
+        return designPreviewReportMarkdown
+    }
+
+    func workbenchCitations(for message: ConversationMessage) -> [WorkbenchCitationViewData] {
+        guard let runID = message.runReference?.runID, isLoadedResultMessage(message) else { return [] }
+        if isDesignPreview {
+            return designPreviewEvidenceRows.prefix(3).enumerated().map { index, evidence in
+                WorkbenchCitationViewData(
+                    claimID: "preview-claim-\(index + 1)",
+                    evidenceID: evidence.id,
+                    sourceID: evidence.sourceID,
+                    runID: runID,
+                    label: evidence.citation
+                )
+            }
+        }
+        guard evidenceJoinError == nil, runDetail?.item.runID == runID else { return [] }
+        return claimEvidenceLinks.map { link in
+            let authors =
+                link.source.authors.isEmpty
+                ? "Unknown author" : link.source.authors.joined(separator: ", ")
+            return WorkbenchCitationViewData(
+                claimID: link.claim.claimID,
+                evidenceID: link.evidence.evidenceID,
+                sourceID: link.source.sourceID,
+                runID: runID,
+                label: "\(authors). \(link.source.title)."
+            )
+        }
+    }
+
+    var workbenchProvenanceRows: [(label: String, value: String)] {
+        if isDesignPreview {
+            return [
+                ("时间", "今天 09:43"),
+                ("模型", "ESM-1b · CAFA-5"),
+                ("参数", "batch_size=64 · max_tokens=1024"),
+                ("数据", "CAFA-5 v1.0 · 官方测试集"),
+                ("Run ID", "7af3b8c"),
+                ("状态", "completed · 已核验"),
+            ]
+        }
+        guard let item = runDetail?.item ?? selectedRun else { return [] }
+        return [
+            ("时间", item.updatedAt.formatted(date: .abbreviated, time: .shortened)),
+            ("模型", workbenchModelName),
+            ("Run ID", item.runID),
+            ("状态", item.status.rawValue),
+            ("来源", "\(item.sourceCount)"),
+            ("证据 / 结论", "\(item.evidenceCount) / \(item.claimCount)"),
+        ]
+    }
+
+    func workbenchStepState(_ stepID: String) -> DesktopStepState {
+        if isSelectedActiveConversation || isDesignPreview,
+            let state = activeProjection.steps[stepID], state != .pending
+        {
+            return state
+        }
+        if runDetail?.manifest["execution"]?["completed_steps"]?.arrayValue?
+            .compactMap(\.stringValue).contains(stepID) == true
+        {
+            return .completed
+        }
+        return isDesignPreview ? previewStepState(stepID) : .pending
+    }
+
+    func workbenchPlanSteps(for message: ConversationMessage) -> [WorkbenchPlanStepViewData] {
+        if isActivePlanMessage(message) || isDesignPreview { return workbenchPlanSteps }
+        let titles = message.text.split(whereSeparator: \.isNewline).dropFirst()
+        return titles.enumerated().map { index, line in
+            WorkbenchPlanStepViewData(
+                id: index < ActiveRunProjector.stepIDs.count
+                    ? ActiveRunProjector.stepIDs[index] : "recorded-step-\(index + 1)",
+                title: line.replacingOccurrences(
+                    of: #"^\d+\.\s*"#,
+                    with: "",
+                    options: .regularExpression
+                ),
+                purpose: "unknown — purpose not available in recorded timeline text",
+                dependencies: ["unknown — dependencies not available in recorded timeline text"],
+                capability: "unknown — capability not available in recorded timeline text",
+                completionCondition:
+                    "unknown — completion condition not available in recorded timeline text",
+                recordedStatus: "unknown — status not available in recorded timeline text"
+            )
+        }
+    }
+
+    func isActivePlanMessage(_ message: ConversationMessage) -> Bool {
+        guard let session = conversations.selectedSession,
+            session.id == activeConversationSessionID,
+            pendingPlan != nil
+        else { return false }
+        return session.messages.last(where: { $0.kind == message.kind })?.id == message.id
+    }
+
+    func isMessageFromActiveConversation(_ message: ConversationMessage) -> Bool {
+        guard conversations.selectedSessionID == activeConversationSessionID else { return false }
+        return conversations.selectedSession?.messages.contains(where: { $0.id == message.id }) == true
+    }
+
+    func isCurrentPlanMessage(_ message: ConversationMessage) -> Bool {
+        guard isMessageFromActiveConversation(message), message.kind == .plan else { return false }
+        return conversations.selectedSession?.messages.last(where: { $0.kind == .plan })?.id == message.id
+    }
+
+    func isActiveRunMessage(_ message: ConversationMessage) -> Bool {
+        if isDesignPreview { return true }
+        guard conversations.selectedSessionID == activeConversationSessionID,
+            message.id == activeConversationRunMessageID,
+            let reference = message.runReference
+        else { return false }
+        if reference.runID.hasPrefix("pending-") { return activeRunDirectory == nil }
+        return activeRunDirectory?.lastPathComponent == reference.runID
+    }
+
+    func isLoadedResultMessage(_ message: ConversationMessage) -> Bool {
+        if isDesignPreview { return true }
+        guard let runID = message.runReference?.runID else { return false }
+        return selectedRun?.runID == runID && runDetail?.item.runID == runID
+    }
+
+    func loadRunReference(_ reference: ConversationRunReference?) {
+        guard let runID = reference?.runID else { return }
+        let matches = runs.filter { $0.runID == runID }
+        guard matches.count == 1 else {
+            selectedRun = nil
+            runDetail = nil
+            claimEvidenceLinks = []
+            evidenceJoinError =
+                matches.isEmpty
+                ? "找不到会话引用的运行 \(runID)。" : "运行引用 \(runID) 不唯一，已阻止预览。"
+            errorMessage = evidenceJoinError
+            return
+        }
+        selectRun(matches[0])
+    }
+
+    func createConversationProject() {
+        do {
+            let index = conversations.projects.filter { !$0.isArchived }.count + 1
+            _ = try conversations.createProject(title: "OpenScience 项目 \(index)")
+            selectedSection = .newResearch
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    func renameSelectedConversationProject() {
+        guard let project = conversations.selectedProject else { return }
+        let alert = NSAlert()
+        alert.messageText = "重命名项目"
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        let field = NSTextField(string: project.title)
+        field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+        alert.accessoryView = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try conversations.renameProject(project.id, title: field.stringValue)
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    func archiveConversationProject(_ projectID: UUID, archived: Bool = true) {
+        if archived, isRunning,
+            conversations.projects.first(where: { $0.id == projectID })?.sessions
+                .contains(where: { $0.id == activeConversationSessionID }) == true
+        {
+            errorMessage = "包含运行中会话的项目不能归档。"
+            return
+        }
+        do {
+            try conversations.archiveProject(projectID, archived: archived)
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    func selectConversationProject(_ projectID: UUID) {
+        do {
+            try conversations.select(projectID: projectID, sessionID: nil)
+            selectedSection = .newResearch
+            selectedRun = nil
+            runDetail = nil
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    func createConversationSession() {
+        do {
+            if conversations.selectedProject == nil {
+                _ = try conversations.createProject(title: "OpenScience")
+            }
+            _ = try conversations.createSession(title: "新研究")
+            selectedSection = .newResearch
+            selectedRun = nil
+            runDetail = nil
+            inspectorSection = .context
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    func selectConversationSession(_ sessionID: UUID) {
+        do {
+            try conversations.selectSession(sessionID)
+            selectedSection = .newResearch
+            if let runID = conversations.selectedSession?.linkedRunIDs.last {
+                let matches = runs.filter { $0.runID == runID }
+                if matches.count == 1 {
+                    selectRun(matches[0])
+                } else {
+                    selectedRun = nil
+                    runDetail = nil
+                    claimEvidenceLinks = []
+                    evidenceJoinError =
+                        matches.isEmpty
+                        ? "找不到会话引用的运行 \(runID)。" : "运行引用 \(runID) 不唯一，已阻止预览。"
+                    errorMessage = evidenceJoinError
+                }
+            } else {
+                selectedRun = nil
+                runDetail = nil
+                claimEvidenceLinks = []
+            }
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    func archiveConversationSession(_ sessionID: UUID, archived: Bool = true) {
+        guard !isRunning || sessionID != activeConversationSessionID else {
+            errorMessage = "运行中的会话不能归档。"
+            return
+        }
+        do {
+            try conversations.archiveSession(sessionID, archived: archived)
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    func archiveSelectedConversation() {
+        guard let sessionID = conversations.selectedSessionID else { return }
+        archiveConversationSession(sessionID)
+    }
+
+    func renameSelectedConversation() {
+        guard let sessionID = conversations.selectedSessionID else { return }
+        renameConversationSession(sessionID)
+    }
+
+    func renameConversationSession(_ sessionID: UUID) {
+        guard
+            let session = conversations.projects.lazy.flatMap(\.sessions)
+                .first(where: { $0.id == sessionID })
+        else { return }
+        let alert = NSAlert()
+        alert.messageText = "重命名会话"
+        alert.informativeText = "名称只保存在本机的会话索引中。"
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        let field = NSTextField(string: session.title)
+        field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+        alert.accessoryView = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try conversations.renameSession(sessionID, title: field.stringValue)
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    func confirmDeleteConversationMetadata(_ sessionID: UUID) {
+        guard
+            let session = conversations.projects.lazy.flatMap(\.sessions)
+                .first(where: { $0.id == sessionID })
+        else { return }
+        guard !isRunning || sessionID != activeConversationSessionID else {
+            errorMessage = "运行中的会话不能删除。请先安全取消或等待运行结束。"
+            return
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "删除“\(session.title)”的会话元数据？"
+        alert.informativeText =
+            "只会删除本机的会话索引、用户消息和安全草稿。关联的 Run、报告、证据与导出文件会继续保留。此操作无法撤销。"
+        alert.addButton(withTitle: "删除会话元数据")
+        alert.addButton(withTitle: "取消")
+        alert.buttons.first?.hasDestructiveAction = true
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            let revision = conversations.revision(for: sessionID)
+            try conversations.deleteSessionMetadata(sessionID, expectedRevision: revision)
+            if activeConversationSessionID == sessionID {
+                activeConversationSessionID = nil
+                activeConversationRunMessageID = nil
+                lastPersistedProjection = nil
+            }
+            selectedRun = nil
+            runDetail = nil
+            claimEvidenceLinks = []
+            operationMessage = "会话元数据已删除；关联研究 Run 与产物未被删除。"
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    func submitConversationPrompt(_ prompt: String) -> Bool {
+        guard workbenchCanSubmit else {
+            if draft.useNetworkModel && !draft.localRoots.isEmpty {
+                errorMessage = "隐私保护已阻止本地证据发送给网络模型。"
+            }
+            return false
+        }
+        do {
+            let session: ConversationSession
+            if let selected = conversations.selectedSession {
+                _ = try conversations.appendMessage(
+                    sessionID: selected.id,
+                    role: .user,
+                    kind: .text,
+                    text: prompt
+                )
+                session = conversations.selectedSession ?? selected
+            } else {
+                session = try conversations.createSession(title: prompt, prompt: prompt)
+            }
+            activeConversationSessionID = session.id
+            activeConversationRunMessageID = nil
+            lastPersistedProjection = nil
+            try conversations.setSessionStatus(sessionID: session.id, status: .planning)
+            _ = try conversations.appendMessage(
+                sessionID: session.id,
+                role: .assistant,
+                kind: .text,
+                text: "我会先生成一份可审阅的五步研究计划；任何网络访问都会单独请求一次性授权。"
+            )
+            draft.question = prompt
+            _ = try conversations.setDraft(
+                sessionID: session.id,
+                draft: ConversationDraft(text: "", researchDraft: draft)
+            )
+            selectedSection = .newResearch
+            inspectorSection = .context
+            startRun()
+            return true
+        } catch {
+            handleConversationError(error)
+            return false
+        }
+    }
+
+    func addConversationAttachments(_ urls: [URL]) {
+        for url in urls.map(\.standardizedFileURL) {
+            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            if isDirectory {
+                if !draft.localRoots.contains(url) { draft.localRoots.append(url) }
+            } else if url.pathExtension.lowercased() == "json", !draft.fixtureFiles.contains(url) {
+                draft.fixtureFiles.append(url)
+            }
+        }
+    }
+
+    func presentSettings() { selectedSection = .settings }
+
+    func focusConversationSearch() {
+        isSidebarPresented = true
+        persistConversationLayout()
+        conversationSearchFocusToken = UUID()
+    }
+
+    func focusConversationContentFind() {
+        conversationContentFindFocusToken = UUID()
+    }
+
+    func handleSafeEscape() {
+        pendingExternalURL = nil
+        operationMessage = nil
+        safeEscapeToken = UUID()
+    }
+
+    func openActiveConversation() {
+        guard let activeConversationSessionID else { return }
+        selectConversationSession(activeConversationSessionID)
+    }
+
+    func conversationDraftDidChange(composerText: String) {
+        if pendingPlan != nil {
+            expirePendingPlan("研究设置发生变化。")
+        }
+        saveConversationDraft(text: composerText)
+    }
+
+    @discardableResult
+    func restoreConversationDraftForSelection() -> String {
+        guard let saved = conversations.selectedSession?.draft else {
+            var empty = ResearchDraft()
+            empty.sourceNames = []
+            draft = empty
+            conversationReselectionNotice = ""
+            return ""
+        }
+        var restored = ResearchDraft()
+        restored.scope = saved.scope
+        restored.constraints = saved.constraints
+        restored.assumptions = saved.assumptions
+        restored.sourceNames = saved.sourceNames
+        restored.email = saved.contactEmail
+        restored.maxRecords = saved.maxRecords
+        restored.maxNetworkRequests = saved.maxNetworkRequests
+        restored.timeoutSeconds = saved.timeoutSeconds
+        restored.useNetworkModel = saved.synthesisName == "openai-compatible"
+        // Hints are display-only. Filesystem authority is always reacquired from NSOpenPanel.
+        restored.localRoots = []
+        restored.fixtureFiles = []
+        draft = restored
+        let hints = saved.localRootHints.map(\.name) + saved.fixtureHints.map(\.name)
+        conversationReselectionNotice =
+            hints.isEmpty
+            ? "" : "需重新选择：" + hints.joined(separator: "、")
+        return saved.text
+    }
+
+    func saveConversationDraft(text: String, sessionID: UUID? = nil) {
+        guard let sessionID = sessionID ?? conversations.selectedSessionID else { return }
+        do {
+            _ = try conversations.setDraft(
+                sessionID: sessionID,
+                draft: ConversationDraft(text: text, researchDraft: draft)
+            )
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    func toggleSidebarPresentation() {
+        if isSidebarPresented, !isSidebarEffectivelyVisible {
+            prioritizesInspectorAtNarrowWidth = false
+            if workbenchAvailableWidth < 820 {
+                operationMessage = "窗口过窄；请放大窗口以恢复会话栏。"
+            }
+        } else {
+            isSidebarPresented.toggle()
+        }
+        persistConversationLayout()
+    }
+
+    func toggleInspectorPresentation() {
+        if isInspectorPresented, !isInspectorEffectivelyVisible {
+            prioritizesInspectorAtNarrowWidth = true
+            if workbenchAvailableWidth < 984 {
+                operationMessage = "窗口过窄；请放大窗口以恢复预览。"
+            }
+        } else {
+            isInspectorPresented.toggle()
+            if !isInspectorPresented { prioritizesInspectorAtNarrowWidth = false }
+        }
+        persistConversationLayout()
+    }
+
+    func updateWorkbenchWidth(_ width: CGFloat) {
+        workbenchAvailableWidth = width
+        if width >= 1_220 { prioritizesInspectorAtNarrowWidth = false }
+    }
+
+    func showInspector(_ section: WorkbenchInspectorSection) {
+        inspectorSection = section
+        isInspectorPresented = true
+        if workbenchAvailableWidth >= 984, workbenchAvailableWidth < 1_220 {
+            prioritizesInspectorAtNarrowWidth = true
+        }
+        persistConversationLayout()
+        guard let sessionID = conversations.selectedSessionID else { return }
+        do {
+            try conversations.selectInspector(
+                InspectorSelection(
+                    tab: inspectorTab(for: section),
+                    sessionID: sessionID,
+                    runID: conversations.selectedSession?.linkedRunIDs.last
+                ))
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    func selectConversationMessage(_ message: ConversationMessage) {
+        let section: WorkbenchInspectorSection
+        switch message.kind {
+        case .plan: section = .plan
+        case .permission: section = .context
+        case .runProgress, .error: section = .context
+        case .result: section = .artifacts
+        case .text: return
+        }
+        if message.runReference != nil, !isActiveRunMessage(message) {
+            loadRunReference(message.runReference)
+        }
+        inspectorSection = section
+        isInspectorPresented = true
+        if workbenchAvailableWidth >= 984, workbenchAvailableWidth < 1_220 {
+            prioritizesInspectorAtNarrowWidth = true
+        }
+        guard let sessionID = conversations.selectedSessionID else { return }
+        do {
+            try conversations.selectInspector(
+                InspectorSelection(
+                    tab: inspectorTab(for: section),
+                    sessionID: sessionID,
+                    messageID: message.id,
+                    runID: message.runReference?.runID,
+                    artifactID: message.artifactReferences.first?.id
+                ))
+            persistConversationLayout()
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    func selectWorkbenchEvidence(at index: Int) {
+        guard workbenchEvidenceRows.indices.contains(index) else { return }
+        let evidence = workbenchEvidenceRows[index]
+        guard let runID = isDesignPreview ? "7af3b8c" : runDetail?.item.runID else {
+            errorMessage = "尚未加载可验证的运行，不能选择证据。"
+            return
+        }
+        selectWorkbenchEvidence(
+            evidenceID: evidence.id,
+            sourceID: evidence.sourceID,
+            runID: runID
+        )
+    }
+
+    func selectWorkbenchEvidence(evidenceID: String, sourceID: String, runID: String) {
+        guard isDesignPreview || runDetail?.item.runID == runID else {
+            errorMessage = "证据选择与当前加载的运行不一致。"
+            return
+        }
+        let matches = workbenchEvidenceRows.filter {
+            $0.id == evidenceID && $0.sourceID == sourceID
+        }
+        guard matches.count == 1 else {
+            errorMessage =
+                matches.isEmpty
+                ? "找不到引用的精确证据与来源。" : "证据与来源关联不唯一，已阻止选择。"
+            return
+        }
+        workbenchSelectedEvidenceID = evidenceID
+        inspectorSection = .evidence
+        isInspectorPresented = true
+        if workbenchAvailableWidth >= 984, workbenchAvailableWidth < 1_220 {
+            prioritizesInspectorAtNarrowWidth = true
+        }
+        persistConversationLayout()
+        guard let sessionID = conversations.selectedSessionID else { return }
+        do {
+            try conversations.selectInspector(
+                InspectorSelection(
+                    tab: .evidence,
+                    sessionID: sessionID,
+                    runID: runID,
+                    artifactID: evidenceID
+                ))
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    func canNavigateWorkbenchEvidence(by offset: Int) -> Bool {
+        guard let selectedID = workbenchSelectedEvidenceID,
+            let index = workbenchEvidenceRows.firstIndex(where: { $0.id == selectedID })
+        else { return false }
+        return workbenchEvidenceRows.indices.contains(index + offset)
+    }
+
+    func navigateWorkbenchEvidence(by offset: Int) {
+        guard let selectedID = workbenchSelectedEvidenceID,
+            let index = workbenchEvidenceRows.firstIndex(where: { $0.id == selectedID }),
+            workbenchEvidenceRows.indices.contains(index + offset)
+        else { return }
+        let evidence = workbenchEvidenceRows[index + offset]
+        guard let runID = isDesignPreview ? "7af3b8c" : runDetail?.item.runID else {
+            errorMessage = "尚未加载可验证的运行，不能导航证据。"
+            return
+        }
+        selectWorkbenchEvidence(
+            evidenceID: evidence.id,
+            sourceID: evidence.sourceID,
+            runID: runID
+        )
+    }
+
+    func presentExportPanel() {
+        guard selectedRun != nil else {
+            showInspector(.artifacts)
+            operationMessage = "研究完成后可导出经过验证的研究包。"
+            return
+        }
+        Task { [weak self] in
+            guard let self, await self.prepareExportSelected() else { return }
+            let panel = NSSavePanel()
+            panel.title = "导出 OpenScience 研究包"
+            panel.nameFieldStringValue = "\(self.selectedRun?.runID ?? "research").zip"
+            guard panel.runModal() == .OK, let output = panel.url else { return }
+            self.exportSelected(to: output)
+        }
+    }
+
+    func revealActiveRun() {
+        guard let directory = activeRunDirectory ?? selectedRun?.directory else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([directory])
     }
 
     func probeEngine() {
@@ -202,10 +1219,28 @@ final class AppModel: ObservableObject {
                         draft: draftSnapshot,
                         modelSummary: modelSummary
                     )
-                    self.isShowingPlanReview = true
+                    self.isShowingPlanReview = self.activeConversationSessionID == nil
+                    if let sessionID = self.activeConversationSessionID,
+                        let context = self.pendingPlanContext
+                    {
+                        let projection = ConversationTimelineProjector.project(
+                            plan: envelope.plan,
+                            context: context,
+                            sessionID: sessionID
+                        )
+                        self.persistConversationProjection(projection, sessionID: sessionID)
+                        _ = try? self.conversations.setSessionStatus(
+                            sessionID: sessionID,
+                            status: .awaitingApproval
+                        )
+                        if self.conversations.selectedSessionID == sessionID {
+                            self.inspectorSection = .plan
+                        }
+                    }
                     self.announce("研究计划已生成，请审阅后明确批准。")
                 } catch {
                     self.errorMessage = "无法生成研究计划：\(error.localizedDescription)"
+                    self.persistConversationFailure("无法生成研究计划：\(error.localizedDescription)")
                 }
             }
         } catch {
@@ -264,6 +1299,14 @@ final class AppModel: ObservableObject {
             let attemptID = attemptBinding.begin(workspace: jobWorkspace)
             appendLog("已批准计划 \(plan.planID)。")
             appendLog("启动：\(invocation.redactedDescription)")
+            if let sessionID = activeConversationSessionID {
+                do {
+                    try conversations.setSessionStatus(sessionID: sessionID, status: .running)
+                    syncConversationRunProgress(runID: "pending-\(plan.planID)", force: true)
+                } catch {
+                    handleConversationError(error)
+                }
+            }
             announce("研究已开始，共五个步骤。")
             beginMonitoring(jobWorkspace, attemptID: attemptID)
             executionTask = Task { [weak self] in
@@ -276,6 +1319,7 @@ final class AppModel: ObservableObject {
     }
 
     func rejectPendingPlan() {
+        let rejectedSessionID = activeConversationSessionID
         pendingPlan = nil
         pendingPlanContext = nil
         pendingDraft = nil
@@ -287,6 +1331,19 @@ final class AppModel: ObservableObject {
         activeJobWorkspace = nil
         activeWorkspace = nil
         operationMessage = "计划未批准，未调用任何研究 Provider。"
+        if let rejectedSessionID {
+            do {
+                try conversations.setSessionStatus(sessionID: rejectedSessionID, status: .draft)
+                _ = try conversations.appendMessage(
+                    sessionID: rejectedSessionID,
+                    role: .system,
+                    kind: .text,
+                    text: "计划已拒绝；没有调用任何研究 Provider。"
+                )
+            } catch {
+                handleConversationError(error)
+            }
+        }
     }
 
     func setPlanNetworkApproval(_ approved: Bool) {
@@ -311,6 +1368,7 @@ final class AppModel: ObservableObject {
         activeWorkspace = nil
         activeJobWorkspace = nil
         isShowingPlanReview = false
+        persistConversationFailure("计划已过期：\(reason)")
     }
 
     func cancelActive() {
@@ -416,6 +1474,34 @@ final class AppModel: ObservableObject {
         if let state = RunStructuralPolicy.validationState(for: item) {
             validationStates[item.directory] = state
             isLoadingDetail = false
+            if let session = conversations.selectedSession,
+                session.linkedRunIDs.contains(item.runID),
+                !session.messages.contains(where: { $0.runReference?.runID == item.runID })
+            {
+                do {
+                    _ = try conversations.setSessionStatus(
+                        sessionID: session.id,
+                        status: .invalid,
+                        linkedRunID: item.runID,
+                        updatedAt: item.updatedAt
+                    )
+                    _ = try conversations.appendMessage(
+                        sessionID: session.id,
+                        role: .assistant,
+                        kind: .error,
+                        text: "关联运行未通过结构完整性检查，只能只读查看。",
+                        runReference: ConversationRunReference(
+                            runID: item.runID,
+                            status: item.status,
+                            sources: item.sourceCount,
+                            evidence: item.evidenceCount,
+                            claims: item.claimCount
+                        )
+                    )
+                } catch {
+                    handleConversationError(error)
+                }
+            }
             return
         }
         isLoadingDetail = true
@@ -428,7 +1514,8 @@ final class AppModel: ObservableObject {
                 }.value
                 guard self.selectedRun?.directory == item.directory else { return }
                 self.runDetail = detail
-                if self.engineAvailable { _ = await self.validate(item, announce: false) }
+                let freshValidation =
+                    self.engineAvailable ? await self.validate(item, announce: false) : nil
                 guard self.selectedRun?.directory == item.directory else { return }
                 do {
                     self.claimEvidenceLinks = try RunRepository(root: root).joinEvidence(in: detail)
@@ -438,6 +1525,29 @@ final class AppModel: ObservableObject {
                         manifestDate: item.updatedAt,
                         errors: [error.localizedDescription],
                         warnings: []
+                    )
+                }
+                if let session = self.conversations.selectedSession,
+                    session.linkedRunIDs.contains(item.runID),
+                    !session.messages.contains(where: { $0.runReference?.runID == item.runID })
+                {
+                    let projection = ConversationTimelineProjector.project(
+                        detail: detail,
+                        sessionID: session.id,
+                        timestamp: item.updatedAt
+                    )
+                    self.persistConversationProjection(projection, sessionID: session.id)
+                }
+                if let session = self.conversations.selectedSession,
+                    session.linkedRunIDs.contains(item.runID),
+                    let freshValidation
+                {
+                    _ = try? self.conversations.setSessionStatus(
+                        sessionID: session.id,
+                        status: freshValidation.valid && self.evidenceJoinError == nil
+                            ? SessionStatus(runStatus: item.status) : .invalid,
+                        linkedRunID: item.runID,
+                        updatedAt: item.updatedAt
                     )
                 }
             } catch {
@@ -649,6 +1759,31 @@ final class AppModel: ObservableObject {
                 workspace: context.runDirectory.deletingLastPathComponent(),
                 fixedRunDirectory: context.runDirectory
             )
+            let resumedRunID = context.runDirectory.lastPathComponent
+            let boundSessions = conversations.projects.flatMap(\.sessions)
+                .filter { $0.linkedRunIDs.contains(resumedRunID) }
+            activeConversationSessionID = boundSessions.count == 1 ? boundSessions[0].id : nil
+            activeConversationRunMessageID = nil
+            lastPersistedProjection = nil
+            if boundSessions.count > 1 {
+                appendLog(
+                    "恢复运行的会话绑定不唯一；本次结果不会投影到任何会话。",
+                    stream: .stderr
+                )
+            }
+            if let session = boundSessions.count == 1 ? boundSessions[0] : nil {
+                activeConversationRunMessageID =
+                    session.messages.last(where: {
+                        $0.runReference?.runID == resumedRunID
+                            && $0.kind == .runProgress
+                    })?.id
+                _ = try? conversations.setSessionStatus(
+                    sessionID: session.id,
+                    status: .running,
+                    linkedRunID: resumedRunID
+                )
+                syncConversationRunProgress(runID: resumedRunID, force: true)
+            }
             selectedSection = .newResearch
             appendLog("已重新批准保存的计划，恢复：\(invocation.redactedDescription)")
             beginMonitoring(context.runDirectory.deletingLastPathComponent(), attemptID: attemptID)
@@ -837,9 +1972,15 @@ final class AppModel: ObservableObject {
                 appendLog(
                     "核验终态：\(outcome.status)，\(outcome.sources) sources / \(outcome.evidence) evidence / \(outcome.claims) claims\n\(limitationText)"
                 )
+                let detail = await loadConversationRunDetail(
+                    outcome: outcome,
+                    directory: outcomeDirectory
+                )
+                persistConversationOutcome(outcome, detail: detail)
             } else {
                 errorMessage = "终态核验失败：" + reconciliation.messages.joined(separator: "；")
                 appendLog(errorMessage ?? "终态核验失败", stream: .stderr)
+                persistConversationFailure(errorMessage ?? "终态核验失败")
             }
         } catch {
             guard attemptBinding.attemptID == attemptID else { return }
@@ -848,6 +1989,7 @@ final class AppModel: ObservableObject {
             } else {
                 errorMessage = error.localizedDescription
                 appendLog(error.localizedDescription, stream: .stderr)
+                persistConversationFailure(error.localizedDescription)
             }
         }
     }
@@ -910,6 +2052,10 @@ final class AppModel: ObservableObject {
                                 completedSteps: completed,
                                 totalSteps: ActiveRunProjector.stepIDs.count,
                                 lastEvent: read?.events.last?.type ?? self.progress.lastEvent
+                            )
+                            self.syncConversationRunProgress(
+                                runID: directory.lastPathComponent,
+                                force: false
                             )
                             if self.activeProjection.cancellationRequested {
                                 self.cancellationStatus = "运行已记录取消终态"
@@ -1136,6 +2282,572 @@ final class AppModel: ObservableObject {
             parts.append("不可用：" + result.unavailable.map(\.name).joined(separator: ", "))
         }
         return parts.joined(separator: "；")
+    }
+
+    private static func makeConversationStore(
+        isDesignPreview: Bool
+    ) -> (store: ConversationStore, issue: String?) {
+        if isDesignPreview {
+            let previewURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "OpenScienceDesignPreview-\(UUID().uuidString)", isDirectory: true
+                )
+                .appendingPathComponent("workspace-v1.json")
+            if let store = try? ConversationStore(fileURL: previewURL, loadIfPresent: false) {
+                return (store, nil)
+            }
+        }
+
+        let applicationSupport =
+            FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support", isDirectory: true)
+        let directory =
+            applicationSupport
+            .appendingPathComponent("OpenScience", isDirectory: true)
+            .appendingPathComponent("Conversations", isDirectory: true)
+        let storeURL = directory.appendingPathComponent("workspace-v1.json")
+        do {
+            return (try ConversationStore(fileURL: storeURL), nil)
+        } catch {
+            let recoveryURL = directory.deletingLastPathComponent()
+                .appendingPathComponent(
+                    "Conversations-Recovery-\(UUID().uuidString)", isDirectory: true
+                )
+                .appendingPathComponent("workspace-v1.json")
+            if let recovery = try? ConversationStore(fileURL: recoveryURL, loadIfPresent: false) {
+                return (
+                    recovery,
+                    "\(error.localizedDescription) 已切换到新的恢复存储，原文件保持不变。"
+                )
+            }
+        }
+
+        let fallbackURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "OpenScienceConversationFallback-\(UUID().uuidString)", isDirectory: true
+            )
+            .appendingPathComponent("workspace-v1.json")
+        guard let fallback = try? ConversationStore(fileURL: fallbackURL, loadIfPresent: false) else {
+            preconditionFailure("Unable to initialize a file-backed conversation store")
+        }
+        return (fallback, "无法访问应用支持目录；本次会话使用临时恢复存储。")
+    }
+
+    private func seedDesignPreview() {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let date: (String) -> Date = { formatter.date(from: $0) ?? Date(timeIntervalSince1970: 0) }
+        let identifier: (String) -> UUID = { UUID(uuidString: $0) ?? UUID() }
+        let mainSessionID = identifier("786A1696-A479-4D7F-8D69-A74C0396C700")
+
+        do {
+            let project = try conversations.createProject(
+                title: "Protein LM Repro",
+                now: date("2026-08-27T09:40:00+08:00"),
+                id: identifier("29D5A6C7-C9BE-4BB6-9A3F-D29929C73F20")
+            )
+            let main = try conversations.createSession(
+                projectID: project.id,
+                title: "Reproduce ESM-1b leaderboard",
+                prompt:
+                    "Reproduce the ESM-1b results on the latest CAFA-5 leaderboard. Use official splits and report exact metrics with citations.",
+                now: date("2026-08-27T09:41:00+08:00"),
+                id: mainSessionID
+            )
+            _ = try conversations.appendMessage(
+                sessionID: main.id,
+                role: .assistant,
+                kind: .text,
+                text: "我将复现 ESM-1b 在 CAFA-5 上的结果：获取官方数据与分割，运行蛋白功能预测，计算并复核指标，再与排行榜对比并给出精确引用。",
+                timestamp: date("2026-08-27T09:41:08+08:00"),
+                id: identifier("949C049E-C3A6-4B48-BA3B-D8F7463A1087")
+            )
+            _ = try conversations.appendMessage(
+                sessionID: main.id,
+                role: .assistant,
+                kind: .permission,
+                text: "计划需要访问 4 个公开来源以获取数据与文献。授权仅适用于这一次运行，凭据不会写入会话。",
+                timestamp: date("2026-08-27T09:41:12+08:00"),
+                id: identifier("A43B80CE-B0A4-4BE8-B6FE-146038145DAB")
+            )
+            _ = try conversations.appendMessage(
+                sessionID: main.id,
+                role: .assistant,
+                kind: .plan,
+                text: [
+                    "研究计划 · 5 个步骤",
+                    "1. 获取 CAFA-5 官方数据与分割",
+                    "2. 检索并复核相关文献与基线",
+                    "3. 运行 ESM-1b 推理",
+                    "4. 计算指标并与排行榜对比",
+                    "5. 生成报告与引用清单",
+                ].joined(separator: "\n"),
+                timestamp: date("2026-08-27T09:41:15+08:00"),
+                id: identifier("4F1B3CB3-7731-41B7-A433-73D80E2D6CF3")
+            )
+            _ = try conversations.appendMessage(
+                sessionID: main.id,
+                role: .assistant,
+                kind: .runProgress,
+                text: "研究运行已完成\n步骤 5/5\n12 个来源 · 18 条证据 · 3 条结论",
+                runReference: ConversationRunReference(
+                    runID: "7af3b8c",
+                    status: .completed,
+                    sources: 12,
+                    evidence: 18,
+                    claims: 3
+                ),
+                timestamp: date("2026-08-27T09:43:00+08:00"),
+                id: identifier("57A58CC1-8E12-4771-B93F-913E4862C3E6")
+            )
+            let report = try ConversationArtifactReference(
+                id: "report-7af3b8c",
+                kind: .report,
+                title: "CAFA-5 ESM-1b 复现报告",
+                relativePath: "report.md"
+            )
+            let manifest = try ConversationArtifactReference(
+                id: "manifest-7af3b8c",
+                kind: .manifest,
+                title: "运行清单",
+                relativePath: "manifest.json"
+            )
+            let result = try conversations.appendMessage(
+                sessionID: main.id,
+                role: .assistant,
+                kind: .result,
+                text: "已复现 ESM-1b 在 CAFA-5 上的结果。平均 Fmax 为 **0.665 ± 0.004**，与官方排行榜一致；在 92 个提交中排名第 2。",
+                runReference: ConversationRunReference(
+                    runID: "7af3b8c",
+                    status: .completed,
+                    sources: 12,
+                    evidence: 18,
+                    claims: 3
+                ),
+                artifactReferences: [report, manifest],
+                timestamp: date("2026-08-27T09:46:00+08:00"),
+                id: identifier("91912D8F-B6CA-463D-A082-EAAFA2ED8792")
+            )
+            _ = try conversations.setSessionStatus(
+                sessionID: main.id,
+                status: .completed,
+                linkedRunID: "7af3b8c",
+                updatedAt: date("2026-08-27T09:41:00+08:00")
+            )
+
+            let samples: [(String, String, String, SessionStatus)] = [
+                (
+                    "C92DC153-E55D-490E-A2DD-F16D6961E18A", "Atlas figure callouts",
+                    "2026-08-27T09:12:00+08:00", .completed
+                ),
+                (
+                    "F7500676-9559-4D7A-92C2-60F9130D5E34", "Cross-species atlas review",
+                    "2026-08-27T08:57:00+08:00", .completed
+                ),
+                (
+                    "92A9EC70-039C-401D-A61E-B61267585B4D", "Dose-response replication",
+                    "2026-08-27T08:34:00+08:00", .completed
+                ),
+                (
+                    "3C77E2E4-130C-4B71-A03D-CEDFD90348D6", "CAFA-5 benchmark audit",
+                    "2026-08-26T17:32:00+08:00", .completed
+                ),
+                (
+                    "B598F36E-C310-45E4-B9F2-C0CF0C08EFBD", "ProtTrans reproduction check",
+                    "2026-08-26T14:11:00+08:00", .partial
+                ),
+                (
+                    "21C15F75-10A4-45A1-8CB0-6A6B97D4495F", "SCVI hyperparameter sweep",
+                    "2026-08-26T10:05:00+08:00", .completed
+                ),
+                (
+                    "63C901B3-B885-4D9C-8BE9-B2BD66E4A479", "UniRef50 masking analysis",
+                    "2026-05-17T16:00:00+08:00", .completed
+                ),
+                (
+                    "943FF1F2-7430-4644-A824-E26AF7DE68E4", "BioRxiv preprints scan",
+                    "2026-05-16T12:00:00+08:00", .completed
+                ),
+            ]
+            for sample in samples {
+                let session = try conversations.createSession(
+                    projectID: project.id,
+                    title: sample.1,
+                    prompt: sample.1,
+                    now: date(sample.2),
+                    id: identifier(sample.0)
+                )
+                _ = try conversations.setSessionStatus(
+                    sessionID: session.id,
+                    status: sample.3,
+                    updatedAt: date(sample.2)
+                )
+            }
+            try conversations.select(projectID: project.id, sessionID: main.id)
+            try conversations.selectInspector(
+                InspectorSelection(
+                    tab: .evidence,
+                    sessionID: main.id,
+                    messageID: result.id,
+                    runID: "7af3b8c"
+                ))
+        } catch {
+            conversationPersistenceIssue = "无法生成设计预览：\(error.localizedDescription)"
+        }
+
+        draft.question = "Reproduce the ESM-1b results on the latest CAFA-5 leaderboard."
+        draft.sourceNames = ["openalex", "crossref"]
+        draft.maxRecords = 92
+        draft.maxNetworkRequests = 16
+        draft.timeoutSeconds = 300
+        engineAvailable = true
+        engineStatusText = "兼容引擎 0.1.0 · bundled"
+        activeConversationSessionID = mainSessionID
+        inspectorSection = .evidence
+        isInspectorPresented = true
+        let completedEvents: [DesktopRunEvent] = [
+            DesktopRunEvent(
+                type: "provider.completed",
+                stepID: "discover",
+                payload: .object(["provider": .string("openalex"), "records": .number(46)])
+            ),
+            DesktopRunEvent(
+                type: "provider.completed",
+                stepID: "discover",
+                payload: .object(["provider": .string("crossref"), "records": .number(46)])
+            ),
+            DesktopRunEvent(
+                type: "provider.completed",
+                stepID: "synthesize",
+                payload: .object(["provider": .string("extractive"), "records": .number(3)])
+            ),
+            DesktopRunEvent(
+                type: "step.completed", stepID: "discover", payload: .object([:])),
+            DesktopRunEvent(
+                type: "step.completed", stepID: "extract", payload: .object([:])),
+            DesktopRunEvent(
+                type: "step.completed", stepID: "synthesize", payload: .object([:])),
+            DesktopRunEvent(
+                type: "step.completed", stepID: "validate", payload: .object([:])),
+            DesktopRunEvent(
+                type: "step.completed", stepID: "report", payload: .object([:])),
+        ]
+        activeProjection = ActiveRunProjector.project(completedEvents)
+        progress = RunProgressSnapshot(
+            completedSteps: ActiveRunProjector.stepIDs.count,
+            totalSteps: ActiveRunProjector.stepIDs.count,
+            lastEvent: "run.completed"
+        )
+        logs = []
+        let primaryEvidence = WorkbenchEvidenceViewData(
+            id: "ev-cafa5-fmax",
+            sourceID: "src-cafa5-paper",
+            title: "The CAFA challenges: competition and evaluation",
+            citation: "Ofer, D. et al. Proteins 87, 3–16 (2019).",
+            passage:
+                "ESM-1b achieved an average Fmax of 0.665 on the CAFA-5 server, ranking second overall among 92 submissions.",
+            locator: "第 7 页 · Results 部分",
+            url: URL(string: "https://doi.org/10.1002/prot.25691"),
+            stance: "supports",
+            relevance: "0.982",
+            claimKind: "sourced_fact",
+            confidence: "0.940",
+            limitations: ["榜单结果只覆盖记录的 CAFA-5 测试条件。"],
+            license: "unknown — license not recorded",
+            sourceStatus: "recorded",
+            retrievalProvenance: ["crossref · 2026-08-27T09:42:12Z"],
+            createdByStep: "extract",
+            contentHash: "unknown — content hash not recorded"
+        )
+        let supportingTitles = [
+            "Biological structure and function emerge from scaling unsupervised learning",
+            "Evaluating protein transfer learning with TAPE",
+            "ProteinGym: large-scale benchmarks for protein fitness prediction",
+            "Critical assessment of protein function annotation",
+            "Learning the protein language: evolution, structure, and function",
+            "UniRef clusters: a comprehensive and scalable alternative",
+            "Assessment of computational methods in CAFA",
+            "Deep learning for protein function prediction",
+            "Ontology-aware evaluation of protein predictions",
+            "Benchmarking sequence representation learning",
+            "Reproducible evaluation for protein language models",
+        ]
+        designPreviewEvidenceRows =
+            [primaryEvidence]
+            + supportingTitles.enumerated().map { index, title in
+                WorkbenchEvidenceViewData(
+                    id: "ev-support-\(index + 1)",
+                    sourceID: "src-support-\(index + 1)",
+                    title: title,
+                    citation: "Recorded source \(index + 2) · CAFA-5 reproduction corpus.",
+                    passage:
+                        "This recorded passage supports the benchmark setup, comparison baseline, or evaluation protocol used by the reproduced run.",
+                    locator: "Recorded source locator \(index + 2)",
+                    url: nil,
+                    stance: "unknown — stance not recorded",
+                    relevance: "unknown — relevance not recorded",
+                    claimKind: "unknown — no joined claim kind",
+                    confidence: "unknown — confidence not recorded",
+                    limitations: ["unknown — no joined claim limitations"],
+                    license: "unknown — license not recorded",
+                    sourceStatus: "recorded fixture",
+                    retrievalProvenance: ["unknown — retrieval provenance not recorded"],
+                    createdByStep: "unknown — producing step not recorded",
+                    contentHash: "unknown — content hash not recorded"
+                )
+            }
+        designPreviewArtifacts = [
+            WorkbenchArtifactViewData(
+                id: "report-7af3b8c",
+                title: "CAFA-5 ESM-1b 复现报告",
+                subtitle: "Markdown · 09:46",
+                symbol: "doc.richtext"
+            ),
+            WorkbenchArtifactViewData(
+                id: "manifest-7af3b8c",
+                title: "运行清单",
+                subtitle: "JSON · SHA-256 已验证",
+                symbol: "checkmark.shield"
+            ),
+        ]
+        designPreviewReportMarkdown = """
+            # CAFA-5 Leaderboard — ESM-1b Reproduction
+
+            | Model | Average Fmax | Rank |
+            |---|---:|---:|
+            | ESM-2 | 0.670 ± 0.004 | 1 |
+            | **ESM-1b** | **0.665 ± 0.004** | **2** |
+            | DeepSeqPan 3.0 | 0.620 ± 0.006 | 3 |
+
+            The reproduced result matches the official leaderboard within the stated tolerance.
+            """
+    }
+
+    private func persistConversationProjection(
+        _ projection: ConversationTimelineProjection,
+        sessionID: UUID
+    ) {
+        do {
+            for message in projection.messages {
+                let persisted = try conversations.appendMessage(
+                    sessionID: sessionID,
+                    role: message.role,
+                    kind: message.kind,
+                    text: message.text,
+                    runReference: message.runReference,
+                    artifactReferences: message.artifactReferences,
+                    timestamp: message.timestamp,
+                    id: message.id
+                )
+                if persisted.kind == .runProgress { activeConversationRunMessageID = persisted.id }
+            }
+            if conversations.selectedSessionID == sessionID {
+                try conversations.selectInspector(projection.selection)
+            }
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    private func syncConversationRunProgress(runID: String, force: Bool) {
+        guard let sessionID = activeConversationSessionID else { return }
+        if !force, lastPersistedProjection == activeProjection { return }
+        lastPersistedProjection = activeProjection
+        let projection = ConversationTimelineProjector.project(
+            activeRun: activeProjection,
+            runID: runID,
+            sessionID: sessionID
+        )
+        guard let message = projection.messages.first else { return }
+        do {
+            let persisted: ConversationMessage
+            if let messageID = activeConversationRunMessageID {
+                persisted = try conversations.updateMessage(
+                    sessionID: sessionID,
+                    messageID: messageID,
+                    kind: message.kind,
+                    text: message.text,
+                    runReference: message.runReference,
+                    artifactReferences: message.artifactReferences,
+                    timestamp: message.timestamp
+                )
+            } else {
+                persisted = try conversations.appendMessage(
+                    sessionID: sessionID,
+                    role: message.role,
+                    kind: message.kind,
+                    text: message.text,
+                    runReference: message.runReference,
+                    artifactReferences: message.artifactReferences,
+                    timestamp: message.timestamp,
+                    id: message.id
+                )
+                activeConversationRunMessageID = persisted.id
+            }
+            try conversations.setSessionStatus(
+                sessionID: sessionID,
+                status: .running,
+                linkedRunID: runID.hasPrefix("pending-") ? nil : runID
+            )
+            if conversations.selectedSessionID == sessionID {
+                try conversations.selectInspector(
+                    InspectorSelection(
+                        tab: .context,
+                        sessionID: sessionID,
+                        messageID: persisted.id,
+                        runID: runID
+                    ))
+            }
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    private func persistConversationOutcome(_ outcome: RunOutcome, detail: RunDetail?) {
+        guard let sessionID = activeConversationSessionID else { return }
+        let projection = ConversationTimelineProjector.project(
+            outcome: outcome,
+            detail: detail,
+            sessionID: sessionID
+        )
+        persistConversationProjection(projection, sessionID: sessionID)
+        do {
+            try conversations.setSessionStatus(
+                sessionID: sessionID,
+                status: SessionStatus(runStatus: RunStatus(rawOrUnknown: outcome.status)),
+                linkedRunID: outcome.runID
+            )
+        } catch {
+            handleConversationError(error)
+        }
+        if conversations.selectedSessionID == sessionID {
+            inspectorSection = detail == nil ? .context : .artifacts
+        }
+        activeConversationRunMessageID = nil
+        lastPersistedProjection = nil
+    }
+
+    private func persistConversationFailure(_ message: String) {
+        guard let sessionID = activeConversationSessionID else { return }
+        do {
+            _ = try conversations.appendMessage(
+                sessionID: sessionID,
+                role: .assistant,
+                kind: .error,
+                text: message
+            )
+            try conversations.setSessionStatus(sessionID: sessionID, status: .failed)
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    private func loadConversationRunDetail(
+        outcome: RunOutcome,
+        directory: URL
+    ) async -> RunDetail? {
+        let status = RunStatus(rawOrUnknown: outcome.status)
+        let updatedAt =
+            (try? directory.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+            ?? Date()
+        let item = RunListItem(
+            runID: outcome.runID,
+            directory: directory,
+            question: draft.question,
+            status: status,
+            updatedAt: updatedAt,
+            sourceCount: outcome.sources,
+            evidenceCount: outcome.evidence,
+            claimCount: outcome.claims
+        )
+        let root = runtimeConfiguration.runRoot
+        do {
+            let detail = try await Task.detached {
+                try RunRepository(root: root).load(item)
+            }.value
+            if let index = runs.firstIndex(where: { $0.runID == item.runID }) {
+                runs[index] = item
+            } else {
+                runs.insert(item, at: 0)
+            }
+            if conversations.selectedSessionID == activeConversationSessionID {
+                selectedRun = item
+                runDetail = detail
+                claimEvidenceLinks = (try? RunRepository(root: root).joinEvidence(in: detail)) ?? []
+                evidenceJoinError = nil
+            }
+            return detail
+        } catch {
+            appendLog("运行完成，但加载预览失败：\(error.localizedDescription)", stream: .stderr)
+            return nil
+        }
+    }
+
+    private func handleConversationError(_ error: Error) {
+        let message = error.localizedDescription
+        errorMessage = "会话操作失败：\(message)"
+        if case ConversationStoreError.ioFailure = error {
+            conversationPersistenceIssue = message
+        }
+    }
+
+    private func inspectorTab(for section: WorkbenchInspectorSection) -> InspectorTab {
+        switch section {
+        case .context: return .context
+        case .plan: return .plan
+        case .evidence: return .evidence
+        case .artifacts: return .artifacts
+        }
+    }
+
+    private func restoreConversationLayout() {
+        let state = conversations.layoutState
+        isSidebarPresented = state.sidebarVisibility == .shown
+        isInspectorPresented = state.previewVisibility == .shown
+        inspectorSection = workbenchInspectorSection(for: state.selectedPreviewTab)
+    }
+
+    private func persistConversationLayout() {
+        do {
+            try conversations.setLayoutState(
+                ConversationLayoutState(
+                    selectedPreviewTab: inspectorTab(for: inspectorSection),
+                    sidebarVisibility: isSidebarPresented ? .shown : .collapsed,
+                    previewVisibility: isInspectorPresented ? .shown : .collapsed,
+                    sidebarWidth: conversations.layoutState.sidebarWidth,
+                    previewWidth: conversations.layoutState.previewWidth
+                ))
+        } catch {
+            handleConversationError(error)
+        }
+    }
+
+    private func workbenchInspectorSection(for tab: InspectorTab) -> WorkbenchInspectorSection {
+        switch tab {
+        case .context: return .context
+        case .plan: return .plan
+        case .evidence: return .evidence
+        case .artifacts: return .artifacts
+        }
+    }
+
+    private func artifactSymbol(_ kind: ArtifactKind) -> String {
+        switch kind {
+        case .report: return "doc.richtext"
+        case .manifest: return "checkmark.shield"
+        case .source: return "doc.text"
+        case .evidence: return "quote.bubble"
+        case .export: return "shippingbox"
+        case .file: return "doc"
+        }
+    }
+
+    private func previewStepState(_ stepID: String) -> DesktopStepState {
+        ActiveRunProjector.stepIDs.contains(stepID) ? .completed : .pending
     }
 
     private func announce(_ message: String) {
