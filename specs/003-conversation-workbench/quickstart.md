@@ -280,9 +280,9 @@ Fill this table only with fresh evidence from the release candidate:
   as a development candidate; this is not evidence that every feature-003 contract is implemented.
 - `ruff format --check`, `ruff check`, and strict `mypy` are green. The deterministic Python run
   reported **140 passed, 3 deselected**.
-- Strict Swift debug and release builds are green. Swift test targets compile and link, but the
-  active Command Line Tools environment did not execute XCTest, so the Swift suite remains pending
-  rather than passed.
+- Strict Swift debug and release builds are green. The local Command Line Tools environment could
+  only compile/link the test targets; GitHub full-Xcode macOS CI run `33066601956` then executed
+  **83 tests with 0 failures**.
 - P0 review fixes were applied for cross-conversation state isolation and exact citation routing.
   These fixes remove identified candidate defects; they do not substitute for the unexecuted full
   contract and journey suites.
@@ -294,15 +294,15 @@ Fill this table only with fresh evidence from the release candidate:
 |------|-----------------|----------|
 | Spec Kit prerequisite/analysis | 100% buildable FR/SC coverage, 0 CRITICAL/HIGH | Pending implementation audit |
 | Python deterministic suite | Pass, live excluded | 2026-08-27: PASS — Ruff format/check and strict mypy green; 140 passed, 3 deselected |
-| Swift full suite | Pass | PARTIAL — strict debug/release builds green; test targets compile/link, but XCTest was not executed by the local CLT environment |
+| Swift full suite | Pass | 2026-08-27: PASS — GitHub full-Xcode macOS CI executed 83 tests with 0 failures; release and app assembly passed |
 | Offline conversation journey | Pass | Pending full `ResearchTurn`/attempt contract and journey execution; three-pane candidate only |
 | Network decline/ephemeral grant | 0 requests on decline; no restored authority | Pending |
-| Session crash/corrupt recovery | 100% fixtures preserve/isolate correctly | Pending deterministic transaction/interrupted-write and isolation suite |
+| Session crash/corrupt recovery | 100% fixtures preserve/isolate correctly | PARTIAL — corrupt/missing/newer workspace/envelope, migration, revision conflict, and metadata-delete tests passed in full-Xcode CI; every write-step transaction injection remains pending |
 | Feature-002 cancel/resume/validate/replay/export/providers | Pass | 2026-08-27: real offline plan/run/validate/inspect/replay/export and helper/provider probes passed; cancel/resume UI regression remains pending full-Xcode/manual acceptance |
-| Option 3 geometry/perceptual fidelity | All geometry; similarity ≥0.90 | Pending — current host captures only 1487 × 865; no valid SC-002 comparison |
+| Option 3 geometry/perceptual fidelity | All geometry; similarity ≥0.90 | BLOCKED — exact 1487 × 1058 native offscreen comparison exists, but unmasked SSIM is 0.579766 and the validated PDF preview remains pending |
 | Keyboard/VoiceOver/minimum-size/appearances | Pass | Pending VoiceOver and manual adaptive/appearance acceptance |
 | 200/1,000/1,000 performance | p95 targets met | Pending benchmark and exact 1,000-citation run |
-| Secret/no-copy scan | 0 findings | 2026-08-27: verification canaries passed; final staged repository no-copy/secret scan still required |
+| Secret/no-copy scan | 0 findings | 2026-08-27: PASS for CI secret-pattern scan and verification canaries; formal clean-room provenance test remains an unchecked feature task |
 | `.app` package smoke | Pass, truthful development boundary | 2026-08-27: PASS — self-contained helper, metadata, JSON probe, and deep strict ad hoc signature verified |
 
 This feature is complete only when every row has authoritative fresh evidence and every applicable

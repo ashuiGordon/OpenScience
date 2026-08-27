@@ -44,7 +44,7 @@ Conversation-workbench candidate validated locally on 2026-08-27:
 | Python deterministic suite | 140 passed; 3 explicit live tests deselected |
 | Python format/lint/types | Ruff format/check and strict mypy passed |
 | Swift format/build | Strict format plus warnings-as-errors Debug and Release builds passed |
-| New conversation tests | 23 XCTest cases compile and link; execution awaits full-Xcode CI |
+| Swift XCTest execution | GitHub full-Xcode macOS CI: 83 passed, 0 failures |
 | App bundle | Embedded helper, `Info.plist`, helper JSON response, and deep ad hoc signature verified |
 | Visual QA | Exact 1487 × 1058 comparison recorded; strict 0.90 similarity/PDF-preview gate remains blocked |
 
