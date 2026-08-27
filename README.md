@@ -1,8 +1,9 @@
 # OpenScience
 
-OpenScience is an original, headless research agent for producing evidence-backed, auditable,
-and replayable research briefs. The Python distribution is `openscience-agent`, the import package
-is `openscience_agent`, and the command-line program is `openscience`.
+OpenScience is an original, local-first research system for producing evidence-backed, auditable,
+and replayable research briefs. It combines a provider-neutral Python core and CLI with a native
+SwiftUI desktop client for macOS. The Python distribution is `openscience-agent`, the import
+package is `openscience_agent`, and the command-line program is `openscience`.
 
 The project puts evidence before narrative: sources, exact evidence passages, claims, policy
 decisions, events, and output artifacts remain separate records connected by stable identifiers.
@@ -13,9 +14,13 @@ synthesis are optional adapters behind the same contracts.
 > regulatory review. Users remain responsible for source rights, interpretation, validation, and
 > decisions based on generated work.
 
+> **Desktop distribution boundary:** the current macOS app is a development/direct-distribution
+> build. Its assembly script applies only an ad hoc local signature; the app is not App Sandbox
+> enabled, Developer ID signed, notarized, or ready for Mac App Store distribution.
+
 ## Current MVP boundary
 
-The first release is intentionally a local Python library and CLI for one researcher. Its scope is:
+The first release is intentionally local and single-user. Its scope is:
 
 - finite plans that a user can inspect and explicitly approve;
 - deterministic fixture research requiring neither an API key nor network access;
@@ -24,40 +29,78 @@ The first release is intentionally a local Python library and CLI for one resear
 - deterministic extractive synthesis, with an optional OpenAI-compatible JSON adapter;
 - evidence-linked Markdown reports, append-only hash-chained events, checkpoints, validation,
   offline replay, and portable ZIP/RO-Crate metadata export;
-- capability policy, network opt-in, bounded provider use, and redaction before persistence.
+- capability policy, network opt-in, bounded provider use, and redaction before persistence;
 - safe local/model separation: the optional network model refuses local-file evidence before any
-  transport; offline extractive synthesis remains available for private materials.
+  transport; offline extractive synthesis remains available for private materials;
+- a native macOS 14+ SwiftUI client for composing runs, monitoring recorded progress, browsing
+  local history and evidence, managing Keychain-backed credentials, cancelling/resuming work, and
+  exporting portable bundles through the existing CLI contracts.
 
-The supported first-release platforms are macOS and Linux with Python 3.11+. The local-file adapter
-uses POSIX descriptor-relative, no-follow reads to defend against path replacement races; Windows
-support is deferred until it can provide the same boundary guarantee.
+The Python engine supports macOS and Linux with Python 3.11+. The desktop client requires macOS 14
+or newer. The local-file adapter uses POSIX descriptor-relative, no-follow reads to defend against
+path replacement races; Windows support is deferred until it can provide the same boundary
+guarantee.
 
 The MVP does **not** execute arbitrary shell/Python/R code, control a browser or laboratory,
-publish remotely, bypass access controls, expose a generic MCP surface, or provide a desktop UI,
-multi-user service, or regulated decision support. Those capabilities require separate sandbox,
+publish remotely, bypass access controls, expose a generic MCP surface, provide a multi-user
+service, or provide regulated decision support. Those capabilities require separate sandbox,
 authorization, and governance specifications.
 
 ## Architecture at a glance
 
 ```text
-CLI / Python API
-        |
-Application commands (run, resume, inspect, cancel, validate, replay, export)
-        |
-Research orchestrator ----- capability policy
-        |                         |
-        +-- typed source and synthesis ports
-        +-- run repository and artifact-store ports
-        +-- validation and event ports
-        |
-Adapters: fixtures, local files, OpenAlex, Crossref,
-          extractive/model synthesis, filesystem persistence
+macOS SwiftUI UI ---- typed Process/JSON bridge ---- openscience CLI
+       |                                               |
+       +---- read-only history and progress -------- run store
+                                                       |
+                               Research orchestrator -- capability policy
+                                      |
+                                      +-- typed source and synthesis ports
+                                      +-- validation, replay, and export
+                                      |
+                               Adapters: fixture/local/OpenAlex/Crossref,
+                               extractive/model synthesis, persistence
+
+Python API callers enter at the same orchestrator and domain contracts.
 ```
 
 The domain and orchestration kernel do not import provider implementations. Side effects stay
 behind typed ports, provider content is always untrusted data, and each state-changing step is
 recorded before it is reported as complete. See [Architecture](docs/architecture.md) and
 [Extension guide](docs/extensions.md).
+
+## Run the macOS desktop client
+
+The native client requires macOS 14 or newer and a Swift 5.10-compatible toolchain. Building the
+self-contained helper also requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/).
+
+For the development loop, install the Python engine and launch the Swift package:
+
+```bash
+uv sync --frozen --all-groups
+swift run --package-path macos/OpenScienceDesktop OpenScienceDesktop
+```
+
+In **Settings**, point the CLI executable at `$PWD/.venv/bin/openscience` from the repository root,
+choose that repository as the working directory, and choose a writable run root. The development
+client can also find `openscience` in `/opt/homebrew/bin`,
+`/usr/local/bin`, or `/usr/bin`.
+
+To assemble an app that contains its own pinned Python helper:
+
+```bash
+uv sync --frozen --all-groups
+./scripts/build-macos-helper.sh
+OPENSCIENCE_HELPER_PATH="$PWD/dist/macos-helper/openscience" \
+  ./macos/OpenScienceDesktop/scripts/build-app.sh
+open macos/OpenScienceDesktop/dist/OpenScience.app
+```
+
+The app resolves `Contents/Helpers/openscience` before any configured or package-manager path. The
+helper build verifies the standalone executable, and app assembly applies an ad hoc signature when
+`codesign` is available; neither script creates a notarized or sandboxed release. Provider
+credentials are stored in macOS Keychain and passed through the child process environment, never
+CLI arguments.
 
 ## CLI surface
 
@@ -125,6 +168,18 @@ uv run ruff format --check .
 uv run ruff check .
 uv run mypy src
 uv run pytest --cov=openscience_agent --cov-report=term-missing
+```
+
+Run the deterministic Swift checks, including the opt-in real CLI bridge contract, from the
+desktop package:
+
+```bash
+cd macos/OpenScienceDesktop
+swift format lint --recursive --strict Sources Tests Package.swift
+OPENSCIENCE_E2E_CLI="$PWD/../../.venv/bin/openscience" \
+OPENSCIENCE_E2E_FIXTURE="$PWD/../../examples/corpus.json" \
+  swift test
+swift build -c release --product OpenScienceDesktop
 ```
 
 Live integration tests remain explicit opt-in tests; the default quality gate is deterministic.

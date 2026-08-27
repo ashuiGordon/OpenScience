@@ -82,6 +82,82 @@ def test_cli_json_mode_emits_one_object(capsys: object) -> None:
     assert len(captured.out.strip().splitlines()) == 1
 
 
+def test_provider_api_keys_can_be_supplied_without_command_line_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENSCIENCE_OPENALEX_API_KEY", "test-openalex-key")
+    monkeypatch.setenv("OPENSCIENCE_CROSSREF_API_KEY", "test-crossref-key")
+    args = cli_module.build_parser().parse_args(
+        ["run", "What practices make computational studies reproducible?", "--json"]
+    )
+
+    registry, _ = cli_module._build_registry(args)
+
+    assert registry.get_source("openalex")._api_key == "test-openalex-key"
+    assert registry.get_source("crossref")._api_key == "test-crossref-key"
+
+
+def test_provider_api_key_arguments_override_environment_for_compatibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENSCIENCE_OPENALEX_API_KEY", "test-environment-key")
+    args = cli_module.build_parser().parse_args(
+        [
+            "run",
+            "What practices make computational studies reproducible?",
+            "--openalex-api-key",
+            "test-argument-key",
+            "--json",
+        ]
+    )
+
+    registry, _ = cli_module._build_registry(args)
+
+    assert registry.get_source("openalex")._api_key == "test-argument-key"
+
+
+def test_inline_model_configuration_avoids_a_mutable_config_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = ProviderRegistry()
+    registry.register_synthesizer(cli_module.ExtractiveSynthesizer())
+    monkeypatch.setenv("OPENSCIENCE_MODEL_API_KEY", "test-model-placeholder-key")
+
+    selected = cli_module._configure_synthesizer(
+        registry,
+        None,
+        requested_name="openai-compatible",
+        endpoint="https://models.example.test/v1/responses",
+        model="research-model",
+        timeout=12.5,
+    )
+
+    provider = registry.get_synthesizer(selected)
+    assert selected == "openai-compatible"
+    assert provider.endpoint == "https://models.example.test/v1/responses"
+    assert provider.model == "research-model"
+    assert provider.timeout == 12.5
+
+
+def test_model_config_file_and_inline_values_are_mutually_exclusive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "model.json"
+    config.write_text('{"endpoint":"https://models.example.test","model":"file-model"}')
+    registry = ProviderRegistry(synthesizers=[cli_module.ExtractiveSynthesizer()])
+    monkeypatch.setenv("OPENSCIENCE_MODEL_API_KEY", "test-model-placeholder-key")
+
+    with pytest.raises(cli_module.CLIError, match="cannot be combined"):
+        cli_module._configure_synthesizer(
+            registry,
+            config,
+            requested_name="openai-compatible",
+            endpoint="https://other.example.test",
+            model="inline-model",
+        )
+
+
 def test_missing_question_is_usage_error(capsys: object) -> None:
     exit_code = main(["plan", "--json"])
     captured = capsys.readouterr()  # type: ignore[attr-defined]

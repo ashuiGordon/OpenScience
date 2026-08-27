@@ -52,6 +52,74 @@ jobs:
       - name: Test with coverage
         run: uv run pytest --cov=openscience_agent --cov-report=term-missing
 
+  macos-desktop:
+    name: macOS desktop client
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      UV_PYTHON: "3.11"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned uv
+        run: python -m pip install --disable-pip-version-check "uv==0.12.3"
+
+      - name: Install Python engine and desktop build dependencies
+        run: uv sync --frozen --all-groups
+
+      - name: Lint Swift formatting
+        working-directory: macos/OpenScienceDesktop
+        run: swift format lint --recursive --strict Sources Tests Package.swift
+
+      - name: Require discovered Swift tests
+        working-directory: macos/OpenScienceDesktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test list | tee "$RUNNER_TEMP/openscience-swift-tests.txt"
+          grep -Eq 'OpenScience(Core|Desktop)Tests' "$RUNNER_TEMP/openscience-swift-tests.txt"
+
+      - name: Test Swift package and real CLI bridge
+        working-directory: macos/OpenScienceDesktop
+        env:
+          OPENSCIENCE_E2E_CLI: ${{ github.workspace }}/.venv/bin/openscience
+          OPENSCIENCE_E2E_FIXTURE: ${{ github.workspace }}/examples/corpus.json
+        run: swift test
+
+      - name: Build Swift release executable
+        working-directory: macos/OpenScienceDesktop
+        run: swift build -c release --product OpenScienceDesktop
+
+      - name: Build standalone Python helper
+        run: ./scripts/build-macos-helper.sh
+
+      - name: Assemble app bundle with helper
+        env:
+          OPENSCIENCE_HELPER_PATH: ${{ github.workspace }}/dist/macos-helper/openscience
+        run: ./macos/OpenScienceDesktop/scripts/build-app.sh
+
+      - name: Verify app metadata, helper, and ad hoc signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="macos/OpenScienceDesktop/dist/OpenScience.app"
+          helper="$app/Contents/Helpers/openscience"
+          plutil -lint "$app/Contents/Info.plist"
+          test "$(plutil -extract LSMinimumSystemVersion raw -o - "$app/Contents/Info.plist")" = "14.0"
+          test -x "$app/Contents/MacOS/OpenScienceDesktop"
+          test -x "$helper"
+          "$helper" --version
+          "$helper" providers --json | python3 -m json.tool >/dev/null
+          codesign --verify --deep --strict --verbose=2 "$app"
+
   secret-patterns:
     name: Secret-pattern scan
     runs-on: ubuntu-latest

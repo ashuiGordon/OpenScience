@@ -1,0 +1,6 @@
+{
+  "description": "Generate bytes in memory; do not commit an 8 MiB blob.",
+  "expected_limit_bytes": 8388608,
+  "generated_byte_count": 8388609,
+  "schema_version": 1
+}

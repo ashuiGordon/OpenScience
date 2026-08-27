@@ -1,0 +1,20 @@
+{
+  "fixture_only": true,
+  "locale": "zh-Hans_CN",
+  "reference_time": "2026-08-27T09:43:00Z",
+  "schema_version": 1,
+  "selected_project": "Protein LM Repro",
+  "selected_tab": "evidence",
+  "timeline": {
+    "evidence_count": 12,
+    "message_count": 7,
+    "plan_steps": 5,
+    "source_count": 12,
+    "state": "completed"
+  },
+  "viewport": {
+    "appearance": "dark",
+    "height": 1058,
+    "width": 1487
+  }
+}
